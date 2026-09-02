@@ -479,29 +479,117 @@ is inert at this scale** (barely distinguishable from the unregularized
 baseline, possibly noise). Combining both barely improves on dropout
 alone. Dropout meaningfully narrows finding 2's gap (3.80 → 3.62) at
 negligible value-loss cost (0.014 → 0.016) -- worth turning on as a
-default when training `gab`/`gab_absolute` -- but does **not** close
-it: 3.62 is still clearly worse than `both`'s 3.428 or plain
-`absolute`'s 3.376. GAB's value-objective advantage over every earlier
-stage stands either way (§8's Finding 1); its policy-objective
-disadvantage is reduced, not eliminated, by this cheap fix. A
-`weight_decay` magnitude sweep (1e-4 was one guess, not tuned; larger
-values like 1e-3/1e-2 might behave differently), a smaller
-`gab_gen_size`, and more self-play data remain untried, in that rough
-order of cheapness, if closing the remaining gap matters before this
-gets used for real.
+default when training `gab`/`gab_absolute` -- but at a fixed epoch 40
+does **not** close it: 3.62 is still clearly worse than `both`'s 3.428
+or plain `absolute`'s 3.376. §8b below revisits this "fixed epoch 40"
+framing itself -- it turns out to be part of the problem, not just the
+measurement.
+
+### 8b. Two more levers: weight_decay magnitude, and gab_gen_size
+
+**Weight_decay magnitude sweep**, `dropout=0.1` held fixed, same
+protocol, `1e-4` (§8a) through `3e-2` -- nearly three orders of
+magnitude:
+
+| weight_decay | val_policy_loss @ 40ep | val_value_loss @ 40ep |
+|---|---|---|
+| 1e-4 (§8a) | 3.615 | 0.016 |
+| 1e-3 | 3.616 | 0.029 |
+| 3e-3 | 3.609 | 0.019 |
+| 1e-2 | 3.645 | 0.029 |
+| 3e-2 | 3.592 | 0.029 |
+
+All five sit in a tight, noise-level band (3.59-3.65) -- no trend
+across nearly 300x in magnitude. **Confirmed, not just suspected:
+weight_decay is not an effective lever here, at any reasonable
+magnitude.** Not worth the added complexity of tuning it further.
+
+**`gab_gen_size` sweep** (the template-library size behind
+`gab_weight`'s dominant O(N²·N²) cost), `dropout=0.1` held fixed,
+default `gab_gen_size=64` (582,851 params) vs. 32 (358,083) vs. 16
+(248,771):
+
+| gab_gen_size | val_policy_loss @ 40ep | val_value_loss @ 40ep | **best-epoch val_policy** | **best-epoch val_value** |
+|---|---|---|---|---|
+| 64 (default) | 3.615-3.797 (§8/§8a) | 0.014-0.016 | ~3.41 (epoch ~10) | ~0.045 (epoch ~10-12) |
+| 32 | 3.654 | 0.023 | ~3.39 (epoch ~10) | ~0.067 (epoch ~10) |
+| 16 | 3.566 | 0.032 | **3.370 (epoch 13)** | 0.055 (epoch 13) |
+
+This is a real, not noise-level, effect: smaller `gab_gen_size`
+consistently narrows the val_policy_loss gap. But the more important
+finding came from pulling `gab_gen_size=16`'s **full** per-epoch trace,
+not just the epoch-40 snapshot every other comparison in this doc uses:
+
+```
+epoch  9: val_policy=3.3768  val_value=0.1284
+epoch 11: val_policy=3.3702  val_value=0.0889
+epoch 13: val_policy=3.3704  val_value=0.0546   <- best joint point
+epoch 17: val_policy=3.3974  val_value=0.0377
+epoch 20: val_policy=3.4275  val_value=0.0410
+   ...                                             (climbs from here)
+epoch 40: val_policy=3.5662  val_value=0.0317
+```
+
+**val_policy_loss bottoms out at epoch 13 (3.370) — better than `both`
+mode's own reported number (3.428) — before climbing back up exactly
+the way every other GAB configuration in this doc does.** Every
+epoch-40 comparison so far in §8/§8a, including the ones judging GAB
+against `both`/`absolute`, compared numbers *after* each config had
+already started overfitting to different degrees -- a fixed epoch
+isn't a fair comparison when different configs overfit at different
+rates. The fair comparison is each config's own best epoch, i.e. what
+early stopping on the val set would actually select in a real training
+pipeline (something none of this doc's runs have used until now).
+
+**Revised conclusion:** at its own best checkpoint,
+`gab_gen_size=16`+`dropout=0.1` `gab_absolute` is competitive with
+`both` on policy (3.370 vs. ~3.43) *while still ahead of it* on value
+in that same epoch region (0.055-0.09 vs. `both`'s own ~0.08-0.10 in
+the comparable epoch range) -- not a clean sweep on every axis
+simultaneously (the value-loss optimum and the policy-loss optimum
+don't land on exactly the same epoch), but no longer the "GAB wins
+value, loses policy" trade §8's Finding 2 first framed. §8's Finding 1
+(GAB's content-dependence avoiding stage 2's failure) and the mechanism
+behind Finding 2 (excess capacity relative to 1,205 training examples)
+both still hold -- reducing `gab_gen_size` directly targets that
+mechanism, which is why it works better than either regularization
+lever tried in §8a.
+
+**Recommendation, updated:** `gab_absolute` with `dropout≈0.1` and
+`gab_gen_size` reduced to 16-32 (not the default 64), trained with
+early stopping on a val split (not a fixed epoch count), is the
+practical default this doc now points to -- not `weight_decay`, and not
+training gen_size=64 to a fixed epoch. **Still untried**, in order of
+what's likely to matter most: more self-play data (the actual
+underlying constraint -- 1,205 examples is small regardless of
+architecture tuning), and applying this same "best-epoch, not fixed-
+epoch" re-comparison retroactively to `relative`/`both`/`absolute`
+too, which this section did not do and which could change §7's
+conclusions somewhat, though probably not their direction (`relative`
+alone plateaus rather than overfits, so an epoch-40 read was fair for
+that specific comparison; `both`/`absolute` showed much milder epoch-40
+drift than GAB to begin with, so the correction is likely smaller for
+them than it was for GAB).
 
 ## 9. Explicitly deferred (not part of this spec)
 
-- **The follow-ups §8 surfaced**: fixing (or accepting and working
-  around) GAB's policy overfitting via more self-play data, a smaller
-  `gab_gen_size`, or weight decay; the full per-square GAB variant
-  (`gab_per_square_dim>0`, maia3-23m/79m's setting) which is more
-  expressive and more expensive still, not attempted here; and §7's
-  own still-open follow-up (value-head pooling design more broadly,
-  beyond the specific GAB-vs-relative comparison §7/§8 already ran).
-  Tracked as follow-up work on top of this same `BoardSpec`/
-  `TokenEncoder`/`TokenTransformerNet` foundation, not a re-derivation
-  of it.
+- **The follow-ups §8a/§8b surfaced**: `weight_decay` is now settled
+  (inert, don't pursue further); `gab_gen_size` is settled as a real,
+  working lever and its recommended range narrowed to 16-32, but not
+  swept below 16 or checked at N=13/19; more self-play data (the
+  likely-largest remaining lever, per §8b) remains completely untried;
+  early stopping on the val split (the mechanism that made
+  `gab_gen_size=16` competitive at all) hasn't been wired into
+  `train.py` as an actual feature, only approximated by hand-reading
+  per-epoch logs; and §8b's own suggestion of re-reading `relative`/
+  `both`/`absolute`'s §7 numbers at their best epoch rather than a
+  fixed one hasn't been done. The full per-square GAB variant
+  (`gab_per_square_dim>0`, maia3-23m/79m's setting), more expressive
+  and more expensive still, remains untried too. And §7's own
+  still-open follow-up (value-head pooling design more broadly, beyond
+  the specific GAB-vs-relative comparison §7/§8 already ran). Tracked
+  as follow-up work on top of this same `BoardSpec`/`TokenEncoder`/
+  `TokenTransformerNet` foundation, not a re-derivation of it.
 - **Group/liberty/eye features.** Deliberately left out so the "does
   attention learn group topology from raw adjacency" question stays
   open and testable, per §1 -- this is exactly what GAB (stage 3) was
