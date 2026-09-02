@@ -455,6 +455,41 @@ decay, a smaller `gab_gen_size`, or more self-play data are the obvious
 next levers, in that rough order of cheapness, if GAB's policy
 overfitting needs fixing before it's trusted for real training).
 
+### 8a. Regularization follow-up
+
+`--dropout` (0.0 → `TokenTransformerNet`'s existing but previously
+unwired `dropout` constructor arg) and `--weight-decay` (new; switches
+`train.py`'s optimizer from `Adam` to `AdamW` — identical to `Adam` at
+`weight_decay=0.0`, but the *correct* decoupled implementation once
+it's nonzero, since plain `Adam(weight_decay=...)` applies L2 through
+the gradient, which interacts badly with Adam's adaptive per-parameter
+rates) were added to `selfplay.py`/`train.py` specifically to test
+whether cheap regularization narrows finding 2's gap. Same shared
+dataset/split/budget as the rest of §8, `pos_mode='gab_absolute'`:
+
+| config | val_policy_loss @ epoch 40 | val_value_loss @ epoch 40 |
+|---|---|---|
+| baseline (no regularization) | 3.797 | 0.014 |
+| `--weight-decay 1e-4` only | 3.811 (no improvement — within noise) | 0.014 |
+| `--dropout 0.1` only | 3.624 | 0.017 |
+| `--dropout 0.1 --weight-decay 1e-4` | 3.615 (best) | 0.016 |
+
+**Dropout is doing essentially all of the work here; `weight_decay=1e-4`
+is inert at this scale** (barely distinguishable from the unregularized
+baseline, possibly noise). Combining both barely improves on dropout
+alone. Dropout meaningfully narrows finding 2's gap (3.80 → 3.62) at
+negligible value-loss cost (0.014 → 0.016) -- worth turning on as a
+default when training `gab`/`gab_absolute` -- but does **not** close
+it: 3.62 is still clearly worse than `both`'s 3.428 or plain
+`absolute`'s 3.376. GAB's value-objective advantage over every earlier
+stage stands either way (§8's Finding 1); its policy-objective
+disadvantage is reduced, not eliminated, by this cheap fix. A
+`weight_decay` magnitude sweep (1e-4 was one guess, not tuned; larger
+values like 1e-3/1e-2 might behave differently), a smaller
+`gab_gen_size`, and more self-play data remain untried, in that rough
+order of cheapness, if closing the remaining gap matters before this
+gets used for real.
+
 ## 9. Explicitly deferred (not part of this spec)
 
 - **The follow-ups §8 surfaced**: fixing (or accepting and working
@@ -519,11 +554,14 @@ overfitting needs fixing before it's trusted for real training).
 - `selfplay.py` / `train.py` — both gained `--net-type {cnn,token}` and
   `--pos-mode {absolute,relative,both,gab,gab_absolute}`
   (`build_encoder_and_model` / `build_model`), plus `--gab-gen-size` /
-  `--gab-intermediate-dim`, so the token-transformer path can actually
-  be self-played and trained, not just unit-tested in isolation;
-  `train.py` additionally gained a seeded `--val-fraction` split with
-  held-out loss reporting (`evaluate()`) — the infrastructure §7/§8's
-  validations needed and used.
+  `--gab-intermediate-dim` and `--dropout` (wires `TokenTransformerNet`'s
+  previously-unwired `dropout` constructor arg to a flag), so the
+  token-transformer path can actually be self-played and trained, not
+  just unit-tested in isolation. `train.py` additionally gained a
+  seeded `--val-fraction` split with held-out loss reporting
+  (`evaluate()`) — the infrastructure §7/§8's validations needed and
+  used — plus `--weight-decay` (switches the optimizer from `Adam` to
+  `AdamW`, identical at the 0.0 default; see §8a).
 
 ---
 *Key files:* `engine/encoder.py` (prior art, CNN plane encoding),

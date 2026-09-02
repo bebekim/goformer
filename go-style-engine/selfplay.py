@@ -80,7 +80,7 @@ def build_encoder_and_model(args):
         model = TokenTransformerNet(
             spec, d_model=args.d_model, nhead=args.nhead,
             num_layers=args.num_layers, dim_feedforward=args.dim_feedforward,
-            pos_mode=args.pos_mode,
+            dropout=args.dropout, pos_mode=args.pos_mode,
             gab_gen_size=args.gab_gen_size, gab_intermediate_dim=args.gab_intermediate_dim)
     return encoder, model
 
@@ -181,6 +181,7 @@ def _write_manifest(out_dir, args, black_knobs, white_knobs, sha, torch_version,
             'dim_feedforward': args.dim_feedforward,
             'gab_gen_size': args.gab_gen_size,
             'gab_intermediate_dim': args.gab_intermediate_dim,
+            'dropout': args.dropout,
             'max_moves': args.max_moves,
             'device': args.device,
             'seed': args.seed,
@@ -317,6 +318,11 @@ def main():
                               "(64 matches maia3-3m/5m's cheap configs)")
     parser.add_argument('--gab-intermediate-dim', type=int, default=64,
                          help='net-type=token, pos-mode=gab*/gab_absolute only')
+    parser.add_argument('--dropout', type=float, default=0.0,
+                         help='net-type=token only: nn.TransformerEncoderLayer dropout. '
+                              'Was a constructor arg on TokenTransformerNet but never '
+                              'wired to a flag until docs/board-specification.md §8 found '
+                              'GAB overfitting the policy head at small self-play scale.')
     parser.add_argument('--max-moves', type=int, default=None,
                          help='default: 2 * board_size^2')
     parser.add_argument('--device', type=str, default='cpu')
