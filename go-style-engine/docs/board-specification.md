@@ -201,7 +201,7 @@ than committing to one:
    heads shape-correct and trainable at any `board_size`, before
    spending complexity budget on bias. `engine/token_transformer.py`
    (`RowColPositionalEmbedding`, `TokenTransformerNet(pos_mode='absolute')`);
-   see §9.
+   see §10.
 2. **Stage 2 (done -- built and empirically validated) -- static
    relative-position bias**, gather-based, not `maia3`'s dense matmul.
    `RelativePositionBias` + `TokenTransformerNet(pos_mode='relative')`,
@@ -210,13 +210,19 @@ than committing to one:
    (learned params = `nheads*(2N-1)²`, e.g. 8×625=5,000 at N=13) and
    interpretable; **§7's validation found it does NOT help the value
    head learn at this scale, and has a working (untested) hypothesis
-   why** -- read §7 before building on this stage further. See §9 for
+   why** -- read §7 before building on this stage further. See §10 for
    the code.
-3. **Stage 3 -- dynamic GAB**, mean-pooled/cheap variant
-   (`gab_per_square_dim=0`, per the two smallest shipped Maia3 models)
-   first, only once the self-play data volume justifies training an
-   extra ~1.8M-param module. This is the one that can actually test the
-   group-topology question above.
+3. **Stage 3 (done -- built and empirically validated) -- dynamic
+   GAB**, mean-pooled/cheap variant (`gab_per_square_dim=0`, per the
+   two smallest shipped Maia3 models), shipped as two options from day
+   one per §7's recommendation: `pos_mode='gab'` (alone) and
+   `'gab_absolute'` (GAB + companion absolute PE). **§8's validation
+   found GAB's content-dependence really does avoid stage 2's
+   value-pooling failure (both variants fit the value target better
+   than every earlier stage) -- but both show real policy overfitting
+   at this project's small self-play data scale**, which its ~420K-582K
+   param cost (dominated by `gab_weight`) makes more likely, not less.
+   Read §8 before training this further. See §10 for the code.
 
 Each stage replaces only the positional-info module; `TokenEncoder`
 (§2-3) and the policy/value heads are untouched across all three.
@@ -373,18 +379,103 @@ this codebase are sensitive to exactly that assumption. Validate
 pure-GAB vs. GAB+absolute-PE the same way this section validated
 `relative` vs. `both`, before trusting either.
 
-## 8. Explicitly deferred (not part of this spec)
+## 8. Stage 3 empirical validation
 
-- **Stage 3 (GAB) above**, and the follow-ups §7 surfaced (value-head
-  pooling design, whether GAB shares the same risk). Tracked as
-  follow-up work on top of this same `BoardSpec`/`TokenEncoder`
-  foundation, not a re-derivation of it.
+Same protocol as §7, and the same recommendation it made, followed
+through: `pos_mode='gab'` and `'gab_absolute'` trained on the
+*identical* `runs/stage2_validation/shared_exp.npz` from §7 (no new
+self-play needed -- same 9x9 dataset, same `--seed 0 --val-fraction
+0.2` split, same 40-epoch budget as the `relative`/`both` runs, so all
+five variants are directly comparable):
+
+```
+train.py --experience runs/stage2_validation/shared_exp.npz --board-size 9 \
+  --net-type token --pos-mode {gab,gab_absolute} --seed 0 --val-fraction 0.2 --epochs 40 \
+  --out-checkpoint checkpoints/stage3_val_{gab,gab_absolute}.pt
+```
+
+| epoch | absolute (12ep) val_value / val_policy | both (40ep) val_value / val_policy | gab (40ep) val_value / val_policy | gab_absolute (40ep) val_value / val_policy |
+|---|---|---|---|---|
+| 1 | -- | 0.827 / -- | 0.721 / 3.480 | 0.860 / 3.613 |
+| 5 | 0.583 / -- | 0.522 / -- | 0.053 / 3.460 | 0.181 / 3.416 |
+| 10 | -- / -- | 0.104 / -- | 0.029 / 3.526 | 0.055 / 3.438 |
+| 12 | 0.110 / 3.376 | 0.087 / -- | 0.027 / 3.597 | 0.034 / 3.459 |
+| 20 | -- | 0.094 / -- | 0.023 / 3.730 | 0.029 / 3.564 |
+| 40 | -- | **0.049** / 3.428 | 0.019 / **4.159** | **0.014** / 3.797 |
+
+Model sizes at these defaults (`d_model=64`, `gab_gen_size=64`,
+`gab_intermediate_dim=64`): `gab` 581,699 params, `gab_absolute`
+582,851 -- versus `absolute`/`relative`/`both`'s roughly 140-150K.
+`gab_weight` alone (419,904 of that) is the dominant term, exactly the
+O(N²·N²) cost flagged in §6.
+
+**Finding 1 (confirms the open question §7 left): GAB's content-
+dependence does let it avoid stage 2's value-pooling failure.** Both
+GAB variants fit the value target better than every earlier
+stage/diagnostic, including `both` -- `gab_absolute` reaches
+val_value_loss 0.014, roughly 3.5x better than `both`'s 0.049. Even
+`gab` *alone*, with no separate absolute PE at all, comfortably beats
+`both` (0.019). This is the real, structural difference §7 predicted
+but left untested: unlike `RelativePositionBias` (identical bias every
+forward pass regardless of board content), GAB's bias is generated
+*from* the board each time, so it carries a location-coupled signal
+into the attention pattern even without ever touching token content
+directly -- confirmed directly here, not merely by analogy to
+Maia3's chess results.
+
+**Finding 2 (a new problem, not predicted): both GAB variants overfit
+on the policy objective, which none of the earlier stages did at this
+budget.** `val_policy_loss` for `gab` climbs from 3.46 (epoch 5) to
+4.16 (epoch 40) while its *train* policy loss keeps falling (3.27→2.68)
+-- classic overfitting, and worse than `both`'s much milder policy
+drift (3.37→3.43 over the same 40 epochs). The likely cause: 1,205
+training examples is very little data for a ~582K-param net whose
+capacity is dominated by one O(N²·N²) matrix specifically built to be
+expressive per-position -- exactly the capacity/data mismatch §6 and
+the `GeometricAttentionBias` docstring warned about in the abstract,
+now observed concretely. `gab_absolute` overfits somewhat less than
+`gab` alone (val_policy 3.80 vs. 4.16 at epoch 40) but still clearly
+more than `both` or `absolute`.
+
+**Net assessment:** GAB is a real, validated improvement for the value
+objective and a real, validated regression for the policy objective, at
+this data scale. Neither earlier stage showed this split -- `absolute`/
+`relative`/`both` were all small enough that policy and value moved
+together. This means GAB isn't simply "better" or "worse" than the
+earlier stages; it trades one failure mode (§7's value-pooling problem)
+for a different one (policy overfitting from excess capacity), and
+which trade is worth it depends on how much self-play data is actually
+available before this gets used for real. `gab_absolute` is the safer
+of the two GAB variants -- equal-or-better on both metrics than `gab`
+alone -- so it's the better default if GAB is used at all right now.
+
+**Scope caveats, same as §7:** one seed, one board size, one small
+dataset, no hyperparameter sweep, no regularization attempted (weight
+decay, a smaller `gab_gen_size`, or more self-play data are the obvious
+next levers, in that rough order of cheapness, if GAB's policy
+overfitting needs fixing before it's trusted for real training).
+
+## 9. Explicitly deferred (not part of this spec)
+
+- **The follow-ups §8 surfaced**: fixing (or accepting and working
+  around) GAB's policy overfitting via more self-play data, a smaller
+  `gab_gen_size`, or weight decay; the full per-square GAB variant
+  (`gab_per_square_dim>0`, maia3-23m/79m's setting) which is more
+  expressive and more expensive still, not attempted here; and §7's
+  own still-open follow-up (value-head pooling design more broadly,
+  beyond the specific GAB-vs-relative comparison §7/§8 already ran).
+  Tracked as follow-up work on top of this same `BoardSpec`/
+  `TokenEncoder`/`TokenTransformerNet` foundation, not a re-derivation
+  of it.
 - **Group/liberty/eye features.** Deliberately left out so the "does
   attention learn group topology from raw adjacency" question stays
-  open and testable, per §1 -- this is exactly what stage 3 (GAB) is
-  meant to probe.
+  open and testable, per §1 -- this is exactly what GAB (stage 3) was
+  meant to probe, and remains open: §8's validation measured value/
+  policy loss, not whether the model's attention actually organized
+  around groups/liberties -- that would need the kind of interpretability
+  analysis Chessformer's own paper does, not attempted here.
 
-## 9. What's built alongside this doc
+## 10. What's built alongside this doc
 
 - `engine/token_encoder.py` — `BoardSpec` dataclass + `TokenEncoder`,
   producing `(num_tokens, token_dim)` arrays from a `GameState`,
@@ -394,14 +485,16 @@ pure-GAB vs. GAB+absolute-PE the same way this section validated
   claim; also checks the move-index convention matches `ZeroEncoder`'s
   at 13x13 (index compatibility, not import coupling — the two encoders
   don't share code, only the row-major index convention).
-- `engine/token_transformer.py` — stages 1 and 2 from §6, selected via
+- `engine/token_transformer.py` — all three stages from §6, selected via
   `TokenTransformerNet(pos_mode=...)`: `RowColPositionalEmbedding`
-  (`'absolute'`) and `RelativePositionBias` (`'relative'`), both feeding
-  the same input projection → `nn.TransformerEncoder` → spatial policy
-  head + pooled pass/value heads. Matches `GoZeroNet.predict`'s external
-  contract (`predict(state_tensor, device) -> (priors, value)`) on
-  purpose, so it drops into `ZeroAgent` (`engine/mcts.py`) unmodified —
-  same encoder/model contract, different internals.
+  (`'absolute'`), `RelativePositionBias` (`'relative'`), and
+  `GeometricAttentionBias` (`'gab'`, or `'gab_absolute'` for GAB +
+  companion absolute PE — the combination §7/§8 recommend using), all
+  feeding the same input projection → `nn.TransformerEncoder` → spatial
+  policy head + pooled pass/value heads. Matches `GoZeroNet.predict`'s
+  external contract (`predict(state_tensor, device) -> (priors, value)`)
+  on purpose, so it drops into `ZeroAgent` (`engine/mcts.py`)
+  unmodified — same encoder/model contract, different internals.
 - `tests/test_token_transformer.py` — stage 1 shape/gradient checks
   parametrized over board size, the `predict()` contract, and an
   end-to-end integration smoke test that plugs `TokenEncoder` +
@@ -416,13 +509,21 @@ pure-GAB vs. GAB+absolute-PE the same way this section validated
   eval-mode-after-training NaN regression test from §7, plus
   `TestTokenTransformerNetBothMode` for the `pos_mode='both'`
   diagnostic that confirmed §7's pooling hypothesis.
+- `tests/test_geometric_attention_bias.py` — stage 3: standalone
+  `GeometricAttentionBias` checks (shape, that `gab_weight` dominates
+  param count as expected, and the defining property that makes it
+  *dynamic* — different board content gives different bias, unlike
+  `RelativePositionBias`), then shape/gradient/ZeroAgent integration
+  coverage for both `'gab'` and `'gab_absolute'`, plus the same
+  eval-after-training NaN regression check.
 - `selfplay.py` / `train.py` — both gained `--net-type {cnn,token}` and
-  `--pos-mode {absolute,relative,both}` (`build_encoder_and_model` /
-  `build_model`), so the token-transformer path can actually be
-  self-played and trained, not just unit-tested in isolation; `train.py`
-  additionally gained a seeded `--val-fraction` split with held-out
-  loss reporting (`evaluate()`) — the infrastructure §7's validation
-  needed and used.
+  `--pos-mode {absolute,relative,both,gab,gab_absolute}`
+  (`build_encoder_and_model` / `build_model`), plus `--gab-gen-size` /
+  `--gab-intermediate-dim`, so the token-transformer path can actually
+  be self-played and trained, not just unit-tested in isolation;
+  `train.py` additionally gained a seeded `--val-fraction` split with
+  held-out loss reporting (`evaluate()`) — the infrastructure §7/§8's
+  validations needed and used.
 
 ---
 *Key files:* `engine/encoder.py` (prior art, CNN plane encoding),

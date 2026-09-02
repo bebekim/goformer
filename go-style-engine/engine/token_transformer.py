@@ -5,7 +5,7 @@ docs/board-specification.md §6:
 
   stage 1 (pos_mode='absolute') -- decomposed row/col absolute PE.
   stage 2 (pos_mode='relative') -- static (Δrow, Δcol) attention bias.
-  stage 3 (pos_mode='gab')      -- dynamic GAB. Not built yet.
+  stage 3 (pos_mode='gab')      -- dynamic GAB.
 
 Each mode is mutually exclusive at forward time (like maia3's
 use_gab/use_relative_bias/use_absolute_pe config flags, of which every
@@ -13,15 +13,19 @@ shipped preset sets exactly one) so the modes stay independently
 A/B-able -- the point of staging is to measure each one's marginal
 contribution, not to accumulate them.
 
-pos_mode='both' is a fourth, DIAGNOSTIC-ONLY option, not a stage: it
-runs absolute PE and relative bias simultaneously, added specifically to
-test the working hypothesis in docs/board-specification.md §7 -- that
-stage 2 alone plateaus on the value target because pos_mode='relative'
-never puts position into token CONTENT (only into attention weighting),
-so the value head's h.mean(dim=1) pooling has nothing location-aware to
-pool. If 'both' learns the value target like 'absolute' does, that
-confirms the hypothesis and is a direct warning for stage 3 (GAB), which
-also runs with no separate absolute PE in every shipped Maia3 config.
+pos_mode='both' is a DIAGNOSTIC-ONLY combination (relative + absolute),
+added to test a hypothesis from §7: stage 2 alone plateaus on the value
+target because pos_mode='relative' never puts position into token
+CONTENT (only into attention weighting), so the value head's
+h.mean(dim=1) pooling has nothing location-aware to pool. 'both'
+confirmed this -- see §7's writeup and its loss table. That confirmation
+is *why* stage 3 ships with a matching pos_mode='gab_absolute' option
+(GAB + absolute PE) available from day one, not added as an
+afterthought: §7 explicitly recommends validating pure-GAB against
+GAB+absolute the same way, rather than assuming GAB is exempt from the
+same pooling problem just because it's content-dependent -- production
+Maia3 ships GAB alone and works, but on 169M supervised games, a very
+different regime from this project's small CPU-only self-play.
 
 Matches GoZeroNet's external interface deliberately (predict(state_tensor,
 device) -> (priors, value)) so it is a drop-in swap for ZeroAgent in
@@ -33,20 +37,23 @@ import torch.nn.functional as F
 
 from .token_encoder import BoardSpec
 
-__all__ = ['RowColPositionalEmbedding', 'RelativePositionBias', 'TokenTransformerNet']
+__all__ = [
+    'RowColPositionalEmbedding', 'RelativePositionBias',
+    'GeometricAttentionBias', 'TokenTransformerNet',
+]
 
 # nn.MultiheadAttention's fused "fastpath" kernel has a real numerical bug:
 # in eval() mode, with a non-causal float attn_mask (exactly what
-# RelativePositionBias -- and GAB later -- inject), it can silently return
-# NaN for certain trained weight values. Confirmed by direct repro: does
-# NOT happen in train() mode, and does NOT happen with a freshly
+# RelativePositionBias and GeometricAttentionBias inject), it can silently
+# return NaN for certain trained weight values. Confirmed by direct repro:
+# does NOT happen in train() mode, and does NOT happen with a freshly
 # initialized (untrained) model -- only after real gradient steps move the
-# weights, which is why none of stage 2's unit tests caught it (none of
-# them trained first). Disabling the fastpath is the documented PyTorch
-# workaround. Cost is a slower nn.MultiheadAttention on CPU, acceptable
-# here since this whole project is CPU-only by design already. Global
-# (not per-module) because the bug is in a shared backend, and because
-# GAB (stage 3) will use the same attn_mask injection mechanism.
+# weights, which is why none of stage 2's original unit tests caught it
+# (none of them trained first). Disabling the fastpath is the documented
+# PyTorch workaround. Cost is a slower nn.MultiheadAttention on CPU,
+# acceptable here since this whole project is CPU-only by design already.
+# Global (not per-module) because the bug is in a shared backend, and
+# because both bias mechanisms use the same attn_mask injection path.
 torch.backends.mha.set_fastpath_enabled(False)
 
 
@@ -128,6 +135,84 @@ class RelativePositionBias(nn.Module):
         return self.gate[:, self.bin_index]
 
 
+class GeometricAttentionBias(nn.Module):
+    """Dynamic (board-content-DEPENDENT) attention bias -- "D: Dynamic
+    GAB" in docs/board-specification.md §6, the same mechanism as
+    Chessformer/Maia3's GAB (maia3/models.py:45-118,
+    `MHA._sq_bias`/`MAIA3Model`), generalized from chess's fixed 8x8 to
+    a parameterized board_size.
+
+    Uses the cheap MEAN-POOLED variant only (maia3's
+    `gab_per_square_dim=0`): summarize the whole board as one pooled
+    vector, then generate the bias from that. This is what maia3's own
+    two SMALLEST shipped models use (maia3-3m-ablation, maia3-5m,
+    model_registry.py's BASE_SIZE_CONFIG); the larger 23M/79M models
+    additionally project each square individually before concatenating
+    (`gab_per_square_dim=32`) for more expressiveness at proportionally
+    higher cost. Deliberately not implemented here -- same "cheapest
+    defensible version first" reasoning as every other stage in this
+    file; add it only if the mean-pooled variant is validated to help
+    and the extra capacity is worth its cost.
+
+    Simplification vs. maia3, consistent with the one RelativePositionBias
+    already makes: ONE shared bias, generated once from the token
+    embeddings entering the encoder (not regenerated per layer from each
+    layer's own evolving hidden state) and applied uniformly to every
+    nn.TransformerEncoderLayer, via nn.TransformerEncoder's single `mask`
+    argument. maia3 instead gives each layer its own generator (sm1/sm2/
+    sm3) reading that layer's own hidden state, sharing only the final
+    gab_weight across layers -- more expressive, but requires a custom
+    per-layer encoder stack. This simpler version still tests the actual
+    question this stage exists to answer (does a content-DEPENDENT bias
+    help over the content-INDEPENDENT one from stage 2) without that
+    added complexity.
+
+    Cost, at the cheap gen_size=64/intermediate_dim=64 defaults (matching
+    maia3-3m-ablation/5m): the generator itself is small, but
+    `gab_weight` -- shape (num_tokens^2, gen_size) -- is not: 169^2*64 ≈
+    1.83M params at N=13, ~4x the entire existing GoZeroNet CNN
+    (474,557 params, docs/mcts-trace-walkthrough.md:42). At N=19 with
+    gen_size=128 (maia3-23m/79m's setting), ~16.7M. Read
+    docs/board-specification.md §6/§7 before training this at N=19
+    without a plan for the self-play data volume it needs.
+    """
+
+    def __init__(self, board_size: int, d_model: int, nheads: int,
+                gen_size: int = 64, intermediate_dim: int = 64):
+        super().__init__()
+        self.num_tokens = board_size * board_size
+        self.nheads = nheads
+        self.gen_size = gen_size
+
+        self.summarize = nn.Linear(d_model, intermediate_dim)
+        self.ln1 = nn.LayerNorm(intermediate_dim)
+        self.generate = nn.Linear(intermediate_dim, nheads * gen_size)
+        self.ln2 = nn.LayerNorm(nheads * gen_size)
+        self.act = nn.GELU()
+
+        # (num_tokens^2, gen_size): a library of gen_size learned
+        # geometric "template" bias maps, mixed per-example by the
+        # generator above -- see docs/board-specification.md §1's GAB
+        # walkthrough (posenc_weight in the original pseudocode).
+        self.gab_weight = nn.Parameter(torch.empty(self.num_tokens * self.num_tokens, gen_size))
+        nn.init.xavier_normal_(self.gab_weight)  # matches maia3/models.py:306
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        """h: (B, num_tokens, d_model) -- token embeddings BEFORE the
+        transformer stack (post input_proj, post absolute PE if any).
+        Returns (B, nheads, num_tokens, num_tokens) -- unlike
+        RelativePositionBias, this already varies per batch example, so
+        callers don't need the unsqueeze/expand step stage 2 needs."""
+        pooled = h.mean(dim=1)  # (B, d_model) -- the cheap mean-pooled variant
+        y = self.act(self.summarize(pooled))
+        y = self.ln1(y)
+        y = self.act(self.generate(y))
+        y = self.ln2(y).view(-1, self.nheads, self.gen_size)  # (B, H, gen_size)
+
+        bias = torch.einsum('bhi,oi->bho', y, self.gab_weight)  # (B, H, T*T)
+        return bias.view(-1, self.nheads, self.num_tokens, self.num_tokens)
+
+
 class TokenTransformerNet(nn.Module):
     def __init__(
         self,
@@ -138,23 +223,34 @@ class TokenTransformerNet(nn.Module):
         dim_feedforward: int = 128,
         dropout: float = 0.0,
         pos_mode: str = 'absolute',
+        gab_gen_size: int = 64,
+        gab_intermediate_dim: int = 64,
     ):
         super().__init__()
         self.spec = spec or BoardSpec()
         self.nhead = nhead
 
-        if pos_mode not in ('absolute', 'relative', 'both'):
+        valid_pos_modes = ('absolute', 'relative', 'both', 'gab', 'gab_absolute')
+        if pos_mode not in valid_pos_modes:
             raise ValueError(
-                f"pos_mode={pos_mode!r}; expected 'absolute' (stage 1), "
-                "'relative' (stage 2), or 'both' (diagnostic, see module "
-                "docstring) -- 'gab' (stage 3) isn't built yet.")
+                f"pos_mode={pos_mode!r}; expected one of {valid_pos_modes} "
+                "-- 'absolute' (stage 1), 'relative' (stage 2), 'gab' or "
+                "'gab_absolute' (stage 3), or 'both' (relative+absolute, "
+                "diagnostic, see module docstring).")
         self.pos_mode = pos_mode
+        use_absolute = pos_mode in ('absolute', 'both', 'gab_absolute')
+        use_relative = pos_mode in ('relative', 'both')
+        use_gab = pos_mode in ('gab', 'gab_absolute')
 
         self.input_proj = nn.Linear(self.spec.token_dim, d_model)
-        if pos_mode in ('absolute', 'both'):
+        if use_absolute:
             self.pos_embed = RowColPositionalEmbedding(self.spec.board_size, d_model)
-        if pos_mode in ('relative', 'both'):
+        if use_relative:
             self.relative_bias = RelativePositionBias(self.spec.board_size, nhead)
+        if use_gab:
+            self.gab = GeometricAttentionBias(
+                self.spec.board_size, d_model, nhead,
+                gen_size=gab_gen_size, intermediate_dim=gab_intermediate_dim)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -183,7 +279,7 @@ class TokenTransformerNet(nn.Module):
         # x: (B, num_tokens, token_dim)
         h = self.input_proj(x)
 
-        if self.pos_mode in ('absolute', 'both'):
+        if self.pos_mode in ('absolute', 'both', 'gab_absolute'):
             h = self.pos_embed(h)
 
         attn_mask = None
@@ -199,6 +295,14 @@ class TokenTransformerNet(nn.Module):
             attn_mask = (bias.unsqueeze(0)
                          .expand(batch_size, -1, -1, -1)
                          .reshape(batch_size * self.nhead, bias.size(1), bias.size(2)))
+        elif self.pos_mode in ('gab', 'gab_absolute'):
+            # h here is post absolute-PE too, when pos_mode='gab_absolute'
+            # -- GAB reads whatever token content the encoder is about to
+            # attend over, same as maia3's per-layer generator reads that
+            # layer's current hidden state (see class docstring for the
+            # one-shared-bias simplification this makes vs. maia3).
+            bias = self.gab(h)  # (B, H, T, T) -- already batch-dependent
+            attn_mask = bias.reshape(-1, bias.size(2), bias.size(3))
 
         h = self.transformer(h, mask=attn_mask)  # (B, num_tokens, d_model)
 

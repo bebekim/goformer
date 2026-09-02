@@ -75,7 +75,8 @@ def build_model(args):
     return TokenTransformerNet(
         spec, d_model=args.d_model, nhead=args.nhead,
         num_layers=args.num_layers, dim_feedforward=args.dim_feedforward,
-        pos_mode=args.pos_mode)
+        pos_mode=args.pos_mode,
+        gab_gen_size=args.gab_gen_size, gab_intermediate_dim=args.gab_intermediate_dim)
 
 
 def evaluate(model, states, policy_targets, rewards, batch_size, device):
@@ -114,8 +115,10 @@ def main():
                          help='net-type=cnn only')
     parser.add_argument('--blocks', type=int, default=6,
                          help='net-type=cnn only')
-    parser.add_argument('--pos-mode', choices=('absolute', 'relative', 'both'), default='absolute',
-                         help='net-type=token only, see docs/board-specification.md §6')
+    parser.add_argument('--pos-mode',
+                         choices=('absolute', 'relative', 'both', 'gab', 'gab_absolute'),
+                         default='absolute',
+                         help='net-type=token only, see docs/board-specification.md §6-7')
     parser.add_argument('--history-depth', type=int, default=7,
                          help='net-type=token only')
     parser.add_argument('--d-model', type=int, default=64,
@@ -126,6 +129,10 @@ def main():
                          help='net-type=token only')
     parser.add_argument('--dim-feedforward', type=int, default=128,
                          help='net-type=token only')
+    parser.add_argument('--gab-gen-size', type=int, default=64,
+                         help='net-type=token, pos-mode=gab*/gab_absolute only')
+    parser.add_argument('--gab-intermediate-dim', type=int, default=64,
+                         help='net-type=token, pos-mode=gab*/gab_absolute only')
     parser.add_argument('--in-checkpoint', type=str, default=None,
                          help='start from this checkpoint; random init if omitted')
     parser.add_argument('--out-checkpoint', type=str, required=True)
@@ -199,6 +206,8 @@ def main():
             'nhead': args.nhead,
             'num_layers': args.num_layers,
             'dim_feedforward': args.dim_feedforward,
+            'gab_gen_size': args.gab_gen_size,
+            'gab_intermediate_dim': args.gab_intermediate_dim,
             'in_checkpoint': args.in_checkpoint,
             'out_checkpoint': args.out_checkpoint,
             'epochs': args.epochs,

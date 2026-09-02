@@ -120,7 +120,7 @@ class TestTokenTransformerNetRelativeMode:
 
     def test_invalid_pos_mode_rejected(self):
         with pytest.raises(ValueError):
-            TokenTransformerNet(BoardSpec(board_size=9), pos_mode='gab')
+            TokenTransformerNet(BoardSpec(board_size=9), pos_mode='not_a_real_mode')
 
     def test_eval_mode_after_training_step_produces_no_nan(self):
         # Regression test for a real PyTorch nn.MultiheadAttention

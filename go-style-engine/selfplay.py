@@ -80,7 +80,8 @@ def build_encoder_and_model(args):
         model = TokenTransformerNet(
             spec, d_model=args.d_model, nhead=args.nhead,
             num_layers=args.num_layers, dim_feedforward=args.dim_feedforward,
-            pos_mode=args.pos_mode)
+            pos_mode=args.pos_mode,
+            gab_gen_size=args.gab_gen_size, gab_intermediate_dim=args.gab_intermediate_dim)
     return encoder, model
 
 
@@ -178,6 +179,8 @@ def _write_manifest(out_dir, args, black_knobs, white_knobs, sha, torch_version,
             'nhead': args.nhead,
             'num_layers': args.num_layers,
             'dim_feedforward': args.dim_feedforward,
+            'gab_gen_size': args.gab_gen_size,
+            'gab_intermediate_dim': args.gab_intermediate_dim,
             'max_moves': args.max_moves,
             'device': args.device,
             'seed': args.seed,
@@ -293,9 +296,11 @@ def main():
                          help='net-type=cnn only')
     parser.add_argument('--blocks', type=int, default=6,
                          help='net-type=cnn only')
-    parser.add_argument('--pos-mode', choices=('absolute', 'relative', 'both'), default='absolute',
+    parser.add_argument('--pos-mode',
+                         choices=('absolute', 'relative', 'both', 'gab', 'gab_absolute'),
+                         default='absolute',
                          help='net-type=token only: TokenTransformerNet positional-info '
-                              'mode, see docs/board-specification.md §6')
+                              'mode, see docs/board-specification.md §6-7')
     parser.add_argument('--history-depth', type=int, default=7,
                          help='net-type=token only: BoardSpec.history_depth')
     parser.add_argument('--d-model', type=int, default=64,
@@ -306,6 +311,12 @@ def main():
                          help='net-type=token only')
     parser.add_argument('--dim-feedforward', type=int, default=128,
                          help='net-type=token only')
+    parser.add_argument('--gab-gen-size', type=int, default=64,
+                         help="net-type=token, pos-mode=gab*/gab_absolute only: "
+                              "GeometricAttentionBias's template-library size "
+                              "(64 matches maia3-3m/5m's cheap configs)")
+    parser.add_argument('--gab-intermediate-dim', type=int, default=64,
+                         help='net-type=token, pos-mode=gab*/gab_absolute only')
     parser.add_argument('--max-moves', type=int, default=None,
                          help='default: 2 * board_size^2')
     parser.add_argument('--device', type=str, default='cpu')
