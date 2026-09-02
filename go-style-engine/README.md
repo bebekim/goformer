@@ -27,6 +27,13 @@ on-device spike, which this is a complementary, cheaper alternative to
   Baduk board." Start here if the Transformer/GAB machinery is new to
   you.
 
+`run_generations.sh` runs the iterative self-play/train loop described
+in `docs/board-specification.md` §9 (generation N's self-play guided by
+generation (N-1)'s checkpoint, rather than one-shot random-net
+generation). For running it unattended on a remote box, see
+whatever gitignored local runbook you keep for your own infra — that
+doc isn't part of this repo since it names specific remote resources.
+
 ## What this is for
 
 Before porting anything to Swift, this answers one question empirically:

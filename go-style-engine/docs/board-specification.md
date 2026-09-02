@@ -697,8 +697,11 @@ and a materially bigger undertaking than anything else in §8.
   not data volume or capacity mismatch. The one lever that could still
   move this number -- a real iterative self-play/train loop instead of
   one-shot random-net generation (`style-without-strength-loss.md`
-  §4a-4b, never run) -- is untested and materially bigger than anything
-  else in §8. §8b's own suggestion of re-reading `relative`/`both`/
+  §4a-4b) -- now has real tooling (`run_generations.sh`, verified
+  end-to-end by its own smoke test, including two real bugs it
+  surfaced and fixed) but has not actually been run for a real
+  multi-generation experiment yet, so its result is still unknown.
+  §8b's own suggestion of re-reading `relative`/`both`/
   `absolute`'s §7 numbers at their best epoch rather than a fixed one
   still hasn't been done -- now cheap to do, since
   `--early-stopping-patience` exists. The full per-square GAB variant

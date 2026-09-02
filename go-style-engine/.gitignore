@@ -7,3 +7,6 @@ checkpoints/
 .DS_Store
 \#*#
 *~
+
+# Personal infra details (sailbox IDs, devbox setup) -- not for a public repo
+docs/unattended-generation-loop.md

@@ -193,14 +193,27 @@ def main(argv=None):
     # architecture change under test.
     num_examples = states.shape[0]
     if args.val_fraction > 0:
-        split_perm = torch.Generator().manual_seed(args.seed)
-        perm = torch.randperm(num_examples, generator=split_perm)
         num_val = int(num_examples * args.val_fraction)
-        val_idx, train_idx = perm[:num_val], perm[num_val:]
-        val_states, val_policy, val_rewards = (
-            states[val_idx], policy_targets[val_idx], rewards[val_idx])
-        states, policy_targets, rewards = (
-            states[train_idx], policy_targets[train_idx], rewards[train_idx])
+        if num_val == 0:
+            if num_examples >= 2:
+                num_val = 1
+                print(f'WARNING: --val-fraction {args.val_fraction} rounds down to 0 '
+                      f'val examples with only {num_examples} total; using 1 instead.')
+            else:
+                print(f'WARNING: only {num_examples} example(s) -- cannot create a '
+                      f'validation split at all; proceeding with no val split (as if '
+                      f'--val-fraction 0). Best-checkpoint tracking and early stopping '
+                      f'are disabled for this run.')
+        if num_val > 0:
+            split_perm = torch.Generator().manual_seed(args.seed)
+            perm = torch.randperm(num_examples, generator=split_perm)
+            val_idx, train_idx = perm[:num_val], perm[num_val:]
+            val_states, val_policy, val_rewards = (
+                states[val_idx], policy_targets[val_idx], rewards[val_idx])
+            states, policy_targets, rewards = (
+                states[train_idx], policy_targets[train_idx], rewards[train_idx])
+        else:
+            val_states = val_policy = val_rewards = None
     else:
         val_states = val_policy = val_rewards = None
 

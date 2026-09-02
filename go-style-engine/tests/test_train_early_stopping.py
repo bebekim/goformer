@@ -152,3 +152,46 @@ class TestEarlyStoppingPatience:
         epoch_checkpoints = list(tmp_path.glob('model.epoch*.pt'))
         assert len(epoch_checkpoints) == 3
         assert (tmp_path / 'model.best.pt').exists()
+
+
+class TestSmallDatasetValSplitRounding:
+    """Regression tests for a real bug hit by run_generations.sh's own
+    smoke test: with a tiny dataset, int(num_examples * val_fraction)
+    can round down to 0, but train.py used to call evaluate() on that
+    empty val set anyway, crashing with ZeroDivisionError. Fixed by
+    bumping num_val to 1 when there are at least 2 examples, and falling
+    back to no val split (rather than crashing) when there's only 1."""
+
+    def test_val_fraction_rounds_to_zero_is_bumped_to_one(self, tmp_path):
+        # 3 examples * 0.2 = 0.6 -> int() = 0 -- exactly what broke.
+        path = tmp_path / 'exp.npz'
+        _write_tiny_experience(path, n=3)
+        out = tmp_path / 'model.pt'
+
+        train.main([
+            '--experience', str(path), '--board-size', '5',
+            '--net-type', 'token', '--pos-mode', 'gab', '--history-depth', '1',
+            '--gab-gen-size', '4', '--gab-intermediate-dim', '4', '--d-model', '8',
+            '--nhead', '2', '--num-layers', '1', '--dim-feedforward', '16',
+            '--epochs', '2', '--val-fraction', '0.2', '--out-checkpoint', str(out),
+        ])
+        meta = json.loads((tmp_path / 'model.pt.meta.json').read_text())
+        assert meta['best_epoch'] is not None
+        assert (tmp_path / 'model.best.pt').exists()
+
+    def test_single_example_falls_back_to_no_split_without_crashing(self, tmp_path):
+        path = tmp_path / 'exp.npz'
+        _write_tiny_experience(path, n=1)
+        out = tmp_path / 'model.pt'
+
+        train.main([
+            '--experience', str(path), '--board-size', '5',
+            '--net-type', 'token', '--pos-mode', 'gab', '--history-depth', '1',
+            '--gab-gen-size', '4', '--gab-intermediate-dim', '4', '--d-model', '8',
+            '--nhead', '2', '--num-layers', '1', '--dim-feedforward', '16',
+            '--epochs', '2', '--val-fraction', '0.2', '--out-checkpoint', str(out),
+        ])
+        assert out.exists()
+        assert not (tmp_path / 'model.best.pt').exists()
+        meta = json.loads((tmp_path / 'model.pt.meta.json').read_text())
+        assert meta['best_epoch'] is None
