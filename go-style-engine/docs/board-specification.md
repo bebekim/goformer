@@ -640,25 +640,67 @@ inherently weak/noisy (per `mcts-trace-walkthrough.md`'s own framing)
 -- more *games* from that same weak generator may just be more of the
 same limited signal, not new signal, regardless of `gab_gen_size`.
 Neither explanation is distinguished from the other here; doing so
-would need a `gab_gen_size` sweep repeated at both data volumes, not
-attempted.
+would need a `gab_gen_size` sweep repeated at both data volumes -- §8e.
+
+### 8e. Resolving §8d: sweeping `gab_gen_size` at both dataset sizes
+
+`gab_gen_size ∈ {16, 32, 64}` × both datasets (1,205 and 4,417
+examples), same `dropout=0.1`, same `--early-stopping-patience 5`,
+same seed:
+
+| `gab_gen_size` | 1,205 examples: best epoch / combined val_loss | 4,417 examples: best epoch / combined val_loss |
+|---|---|---|
+| 16 | 13 / **3.4251** | 14 / **3.4444** |
+| 32 | 11 / 3.4450 | 10 / 3.4537 |
+| 64 | 8 / 3.4423 | 7 / 3.4637 |
+
+**This decides it: the capacity/data co-scaling explanation is
+refuted.** If data and capacity needed to scale together, `gen_size=64`
+(or 32) should have closed the gap with 3.7x more data -- instead
+`gen_size=16` wins at *both* volumes, and every `gen_size` got slightly
+*worse* with more data, not better (16: 3.4251→3.4444; 32:
+3.4450→3.4537; 64: 3.4423→3.4637 -- the same direction, three times, a
+real pattern rather than one noisy run). **The weak-generator-signal
+explanation is what the data actually supports**: since every game in
+this doc comes from an MCTS search guided by a randomly-initialized,
+never-trained net, more games from that same generator add more of the
+same limited signal, not new signal -- so more data doesn't help, and
+mildly hurts by giving each config more low-quality examples to overfit
+to before early stopping catches it.
+
+A second, independent pattern in the same table corroborates this:
+best-epoch gets *earlier* as `gen_size` grows, at both data volumes
+(13→11→8, and 14→10→7). Bigger nets overfit *faster* regardless of how
+much data they're given -- exactly what capacity mismatch predicts, and
+not what you'd expect if data volume were the binding constraint.
+
+**Updated recommendation:** stop chasing more data from this
+random-net self-play generator -- it isn't the lever. `gab_gen_size=16`
++ `dropout=0.1` + early stopping is the settled practical default from
+this whole §8 investigation. The one lever that could plausibly still
+move this number is generating self-play data from an *actually
+improving* net (a real iterative AlphaZero-style gen0→train→gen1→train
+loop, per `style-without-strength-loss.md`'s own §4a-4b, never run in
+this doc) rather than one-shot random-net self-play -- untested here,
+and a materially bigger undertaking than anything else in §8.
 
 ## 9. Explicitly deferred (not part of this spec)
 
-- **The follow-ups §8a-§8d surfaced**: `weight_decay` is settled
-  (inert, don't pursue further); `gab_gen_size` is settled as a real,
-  working lever, recommended range 16-32, but not swept below 16 or
-  checked at N=13/19; early stopping on the val split is now real
-  (`train.py --early-stopping-patience`, §8c); more self-play data was
-  tested (§8d, 30→90 games) and, surprisingly, did **not** help at the
-  already-reduced `gab_gen_size=16` capacity -- two competing
-  explanations proposed in §8d (data/capacity need to scale together;
-  or the random-net self-play generator caps signal regardless of game
-  count) but not distinguished, which is the actual next step here, not
-  "try even more data" -- a `gab_gen_size` sweep repeated at both data
-  volumes would tell them apart. §8b's own suggestion of re-reading
-  `relative`/`both`/`absolute`'s §7 numbers at their best epoch rather
-  than a fixed one still hasn't been done -- now cheap to do, since
+- **The follow-ups §8a-§8e surfaced**: `weight_decay` is settled
+  (inert, don't pursue further); `gab_gen_size=16` is settled as the
+  practical default, confirmed best at *both* data volumes tested
+  (§8e), not just 16 vs. 32/64 -- still not swept below 16 or checked
+  at N=13/19; early stopping on the val split is now real (`train.py
+  --early-stopping-patience`, §8c); more self-play data is settled too
+  (§8d/§8e) -- it doesn't help, because the self-play generator itself
+  (a randomly-initialized, never-trained net) is the actual bottleneck,
+  not data volume or capacity mismatch. The one lever that could still
+  move this number -- a real iterative self-play/train loop instead of
+  one-shot random-net generation (`style-without-strength-loss.md`
+  §4a-4b, never run) -- is untested and materially bigger than anything
+  else in §8. §8b's own suggestion of re-reading `relative`/`both`/
+  `absolute`'s §7 numbers at their best epoch rather than a fixed one
+  still hasn't been done -- now cheap to do, since
   `--early-stopping-patience` exists. The full per-square GAB variant
   (`gab_per_square_dim>0`, maia3-23m/79m's setting), more expressive
   and more expensive still, remains untried too. And §7's own
