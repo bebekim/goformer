@@ -571,19 +571,45 @@ that specific comparison; `both`/`absolute` showed much milder epoch-40
 drift than GAB to begin with, so the correction is likely smaller for
 them than it was for GAB).
 
-## 9. Explicitly deferred (not part of this spec)
+### 8c. Real early stopping in `train.py`
+
+§8b's headline result -- `gab_gen_size=16`'s true minimum at epoch 13,
+found only by reading a full per-epoch trace by hand -- wasn't
+reproducible as a normal training run: nothing in `train.py` actually
+selected or kept that checkpoint. `--early-stopping-patience N` (0 =
+disabled, the old behavior) fixes this: whenever `--val-fraction > 0`,
+every epoch's checkpoint is compared against the best combined val loss
+(`val_policy_loss + val_value_loss`) seen so far, the best one is saved
+to `<out-stem>.best.pt`, and `--out-checkpoint` itself becomes a copy
+of that best checkpoint at the end of training -- **not** the last
+epoch trained, which is the point: this doc's whole finding was that
+the last epoch is usually worse. Tracking-and-keeping-the-best is
+always on with a val split; `--early-stopping-patience` only adds
+stopping *early* (compute savings) once that many epochs pass with no
+improvement. `train.py`'s `main()` was refactored to take an optional
+`argv` list so this could be tested in-process
+(`tests/test_train_early_stopping.py`) instead of only by shelling out.
+
+Re-running §8b's exact `gab_gen_size=16` config through the new flag
+reproduced the hand-found result exactly: best epoch 13, `val_policy_loss=3.3704`,
+`val_value_loss=0.0546` -- and, given a generous 40-epoch budget with
+`--early-stopping-patience 3`, training actually stopped at epoch 16
+(3 non-improving epochs after epoch 13), saving 24 of the 40 epochs'
+compute. This is the piece that makes §8b's finding something you get
+by default from running `train.py` normally, not something that
+required hand-reading logs after the fact.
 
 - **The follow-ups §8a/§8b surfaced**: `weight_decay` is now settled
   (inert, don't pursue further); `gab_gen_size` is settled as a real,
   working lever and its recommended range narrowed to 16-32, but not
   swept below 16 or checked at N=13/19; more self-play data (the
-  likely-largest remaining lever, per §8b) remains completely untried;
-  early stopping on the val split (the mechanism that made
-  `gab_gen_size=16` competitive at all) hasn't been wired into
-  `train.py` as an actual feature, only approximated by hand-reading
-  per-epoch logs; and §8b's own suggestion of re-reading `relative`/
-  `both`/`absolute`'s §7 numbers at their best epoch rather than a
-  fixed one hasn't been done. The full per-square GAB variant
+  likely-largest remaining lever, per §8b) remains completely untried
+  as of §8b, see §8c; early stopping on the val split is now real
+  (`train.py --early-stopping-patience`, §8c) rather than approximated
+  by hand-reading per-epoch logs; and §8b's own suggestion of
+  re-reading `relative`/`both`/`absolute`'s §7 numbers at their best
+  epoch rather than a fixed one still hasn't been done. The full
+  per-square GAB variant
   (`gab_per_square_dim>0`, maia3-23m/79m's setting), more expressive
   and more expensive still, remains untried too. And §7's own
   still-open follow-up (value-head pooling design more broadly, beyond
@@ -649,7 +675,16 @@ them than it was for GAB).
   seeded `--val-fraction` split with held-out loss reporting
   (`evaluate()`) — the infrastructure §7/§8's validations needed and
   used — plus `--weight-decay` (switches the optimizer from `Adam` to
-  `AdamW`, identical at the 0.0 default; see §8a).
+  `AdamW`, identical at the 0.0 default; see §8a) and
+  `--early-stopping-patience` with real best-checkpoint tracking/saving
+  (see §8c). `train.py`'s `main()` now takes an optional `argv` so it
+  can be called in-process from tests.
+- `tests/test_train_early_stopping.py` — best-checkpoint tracking (with
+  and without a val split), that `--out-checkpoint` really does match
+  the epoch with the lowest combined val loss (not just that a file
+  exists), the `--early-stopping-patience`-without-`--val-fraction`
+  error guard, and that patience actually stops training before
+  `--epochs` completes.
 
 ---
 *Key files:* `engine/encoder.py` (prior art, CNN plane encoding),

@@ -103,7 +103,9 @@ def evaluate(model, states, policy_targets, rewards, batch_size, device):
     return total_policy_loss / num_batches, total_value_loss / num_batches
 
 
-def main():
+def main(argv=None):
+    """argv=None reads sys.argv (normal CLI use); pass an explicit list
+    to call this in-process, e.g. from tests, without a subprocess."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--experience', type=str, required=True)
@@ -153,9 +155,23 @@ def main():
                          help='holdout fraction for a validation split reported '
                               'each epoch alongside training loss (0 = no split, '
                               'trains on everything, matches old behavior)')
+    parser.add_argument('--early-stopping-patience', type=int, default=0,
+                         help='requires --val-fraction > 0. Stop once the combined '
+                              'val loss (val_policy_loss + val_value_loss) hasn\'t '
+                              'improved for this many epochs (0 = disabled: always '
+                              'run the full --epochs). Independent of tracking the '
+                              'best checkpoint -- that happens whenever '
+                              '--val-fraction > 0, patience only controls whether '
+                              'training stops before --epochs is reached. Added '
+                              'after docs/board-specification.md §8b found every '
+                              'earlier comparison in that doc was reading a fixed '
+                              'epoch 40 instead of each config\'s own best epoch.')
     parser.add_argument('--seed', type=int, default=0,
                          help='seed for torch and numpy RNGs (0 = default)')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.early_stopping_patience > 0 and args.val_fraction <= 0:
+        parser.error('--early-stopping-patience requires --val-fraction > 0')
 
     # Reproducibility: seed both torch and numpy before training
     torch.manual_seed(args.seed)
@@ -242,6 +258,9 @@ def main():
 
     model.train()
     epoch_losses = []
+    best_val_loss = None
+    best_epoch = None
+    epochs_without_improvement = 0
     t0 = time.time()
     for epoch in range(args.epochs):
         perm = torch.randperm(num_examples)
@@ -277,6 +296,7 @@ def main():
         log_line = (f'epoch {epoch + 1}/{args.epochs}: '
                     f'policy_loss={avg_policy:.4f}, value_loss={avg_value:.4f}')
 
+        combined_val_loss = None
         if val_states is not None:
             val_policy_loss, val_value_loss = evaluate(
                 model, val_states, val_policy, val_rewards, args.batch_size, args.device)
@@ -284,8 +304,28 @@ def main():
             epoch_record['val_value_loss'] = val_value_loss
             log_line += (f' | val_policy_loss={val_policy_loss:.4f}, '
                          f'val_value_loss={val_value_loss:.4f}')
+            combined_val_loss = val_policy_loss + val_value_loss
 
         epoch_losses.append(epoch_record)
+
+        # Track and save the best checkpoint by combined val loss --
+        # independent of whether --early-stopping-patience is set.
+        # docs/board-specification.md §8b found every earlier comparison
+        # in that doc was reading a fixed epoch 40 instead of each
+        # config's own best epoch, which understated GAB specifically
+        # (it overfits faster than the other pos_modes). This is what
+        # makes "best epoch" a real, checkable artifact instead of
+        # something read off log lines by hand.
+        if combined_val_loss is not None:
+            if best_val_loss is None or combined_val_loss < best_val_loss:
+                best_val_loss = combined_val_loss
+                best_epoch = epoch + 1
+                epochs_without_improvement = 0
+                torch.save(model.state_dict(), f'{out_stem}.best.pt')
+                log_line += ' (new best)'
+            else:
+                epochs_without_improvement += 1
+
         print(log_line)
 
         # Save epoch checkpoint (besides the final one)
@@ -293,15 +333,34 @@ def main():
         torch.save(model.state_dict(), epoch_path)
         print(f'Wrote epoch checkpoint: {epoch_path}')
 
+        if (args.early_stopping_patience > 0 and combined_val_loss is not None
+                and epochs_without_improvement >= args.early_stopping_patience):
+            print(f'Early stopping at epoch {epoch + 1}: no improvement for '
+                  f'{epochs_without_improvement} epochs '
+                  f'(best epoch {best_epoch}, best_val_loss={best_val_loss:.4f})')
+            break
+
     elapsed = time.time() - t0
     print(f'\nTraining complete in {elapsed:.1f}s')
 
-    # Final checkpoint
-    torch.save(model.state_dict(), out_path)
-    print(f'Wrote {out_path}')
+    # Final checkpoint: with a val split, --out-checkpoint IS the best
+    # epoch's weights, not necessarily the last epoch trained -- the
+    # whole point of this section is that the last epoch is usually
+    # worse. Without a val split (old behavior, val_fraction=0), it's
+    # still the last epoch, unchanged.
+    if best_epoch is not None:
+        with open(f'{out_stem}.best.pt', 'rb') as src, open(out_path, 'wb') as dst:
+            dst.write(src.read())
+        print(f'Wrote {out_path} (= best epoch {best_epoch}, '
+              f'combined val_loss={best_val_loss:.4f})')
+    else:
+        torch.save(model.state_dict(), out_path)
+        print(f'Wrote {out_path}')
 
     # Write .meta.json sidecar
     meta['final_epoch_losses'] = epoch_losses
+    meta['best_epoch'] = best_epoch
+    meta['best_val_loss'] = best_val_loss
     meta['timestamp'] = time.time()
     meta_path = f'{out_path}.meta.json'
     with open(meta_path, 'w') as f:
