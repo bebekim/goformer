@@ -196,19 +196,25 @@ right port.
 Given all that, positional info is being rolled out in stages rather
 than committing to one:
 
-1. **Stage 1 (done, this branch) -- decomposed row/col absolute PE.**
+1. **Stage 1 (done) -- decomposed row/col absolute PE.**
    Cheapest possible way to get encoder -> transformer -> policy/value
    heads shape-correct and trainable at any `board_size`, before
    spending complexity budget on bias. `engine/token_transformer.py`
-   (`RowColPositionalEmbedding`, `TokenTransformerNet`); see §8.
-2. **Stage 2 (next) -- static relative-position bias**, gather-based,
-   not `maia3`'s dense matmul. Cheap, interpretable, tests whether a
-   pure adjacency prior helps over pos-only-by-embedding at all.
+   (`RowColPositionalEmbedding`, `TokenTransformerNet(pos_mode='absolute')`);
+   see §8.
+2. **Stage 2 (done, this branch) -- static relative-position bias**,
+   gather-based, not `maia3`'s dense matmul. `RelativePositionBias` +
+   `TokenTransformerNet(pos_mode='relative')`, injected via
+   `nn.TransformerEncoder`'s `mask` argument -- the same mechanism
+   `maia3`'s `MHA.forward` uses for `attn_mask`. Cheap (learned params
+   = `nheads*(2N-1)²`, e.g. 8×625=5,000 at N=13) and interpretable;
+   tests whether a pure adjacency prior helps over pos-only-by-
+   embedding at all. See §8.
 3. **Stage 3 -- dynamic GAB**, mean-pooled/cheap variant
    (`gab_per_square_dim=0`, per the two smallest shipped Maia3 models)
-   first, only once stages 1-2 are working and the self-play data
-   volume justifies training an extra ~1.8M-param module. This is the
-   one that can actually test the group-topology question above.
+   first, only once the self-play data volume justifies training an
+   extra ~1.8M-param module. This is the one that can actually test the
+   group-topology question above.
 
 Each stage replaces only the positional-info module; `TokenEncoder`
 (§2-3) and the policy/value heads are untouched across all three.
@@ -232,17 +238,25 @@ Each stage replaces only the positional-info module; `TokenEncoder`
   claim; also checks the move-index convention matches `ZeroEncoder`'s
   at 13x13 (index compatibility, not import coupling — the two encoders
   don't share code, only the row-major index convention).
-- `engine/token_transformer.py` — stage 1 from §6:
-  `RowColPositionalEmbedding` + `TokenTransformerNet` (input projection
-  → pos embed → `nn.TransformerEncoder` → spatial policy head +
-  pooled pass/value heads). Matches `GoZeroNet.predict`'s external
+- `engine/token_transformer.py` — stages 1 and 2 from §6, selected via
+  `TokenTransformerNet(pos_mode=...)`: `RowColPositionalEmbedding`
+  (`'absolute'`) and `RelativePositionBias` (`'relative'`), both feeding
+  the same input projection → `nn.TransformerEncoder` → spatial policy
+  head + pooled pass/value heads. Matches `GoZeroNet.predict`'s external
   contract (`predict(state_tensor, device) -> (priors, value)`) on
   purpose, so it drops into `ZeroAgent` (`engine/mcts.py`) unmodified —
   same encoder/model contract, different internals.
-- `tests/test_token_transformer.py` — shape/gradient checks parametrized
-  over board size, the `predict()` contract, and an end-to-end
-  integration smoke test that plugs `TokenEncoder` + `TokenTransformerNet`
-  into the real `ZeroAgent` MCTS harness and plays moves on a 5x5 board.
+- `tests/test_token_transformer.py` — stage 1 shape/gradient checks
+  parametrized over board size, the `predict()` contract, and an
+  end-to-end integration smoke test that plugs `TokenEncoder` +
+  `TokenTransformerNet` into the real `ZeroAgent` MCTS harness and plays
+  moves on a 5x5 board.
+- `tests/test_relative_position_bias.py` — stage 2: standalone
+  `RelativePositionBias` checks (shape, the quadratic-not-quartic
+  learned-param count, the defining relative-bias property that
+  identical (Δrow,Δcol) offsets get identical bias regardless of where
+  on the board they occur), then the same shape/gradient/ZeroAgent
+  integration coverage as stage 1 with `pos_mode='relative'`.
 
 ---
 *Key files:* `engine/encoder.py` (prior art, CNN plane encoding),

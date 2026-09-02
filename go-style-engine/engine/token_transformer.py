@@ -1,15 +1,17 @@
-"""Stage-1 trans-go-former body: intersection tokens (token_encoder.py) in,
-policy/value out, through a plain Transformer encoder with a decomposed
-row/col absolute positional embedding (approach "B2" in
-docs/board-specification.md's positional-info evaluation).
+"""trans-go-former body: intersection tokens (token_encoder.py) in,
+policy/value out, through a plain Transformer encoder with a swappable
+positional-info mechanism -- the staged rollout from
+docs/board-specification.md §6:
 
-This is deliberately the cheapest of the three positional-info options
-compared there (vs. static relative-position bias, vs. dynamic GAB) --
-the goal of this stage is to prove the encoder -> transformer -> policy
-head pipeline is wired correctly and shape-correct at any board_size,
-not to compete with GoZeroNet on strength. Relative bias and GAB are
-follow-up stages that replace `RowColPositionalEmbedding` without
-touching TokenEncoder or the heads.
+  stage 1 (pos_mode='absolute') -- decomposed row/col absolute PE.
+  stage 2 (pos_mode='relative') -- static (Δrow, Δcol) attention bias.
+  stage 3 (pos_mode='gab')      -- dynamic GAB. Not built yet.
+
+Each mode is mutually exclusive at forward time (like maia3's
+use_gab/use_relative_bias/use_absolute_pe config flags, of which every
+shipped preset sets exactly one) so the modes stay independently
+A/B-able -- the point of staging is to measure each one's marginal
+contribution, not to accumulate them.
 
 Matches GoZeroNet's external interface deliberately (predict(state_tensor,
 device) -> (priors, value)) so it is a drop-in swap for ZeroAgent in
@@ -21,7 +23,7 @@ import torch.nn.functional as F
 
 from .token_encoder import BoardSpec
 
-__all__ = ['RowColPositionalEmbedding', 'TokenTransformerNet']
+__all__ = ['RowColPositionalEmbedding', 'RelativePositionBias', 'TokenTransformerNet']
 
 
 class RowColPositionalEmbedding(nn.Module):
@@ -52,6 +54,56 @@ class RowColPositionalEmbedding(nn.Module):
         return x + self.row_embed(self.rows) + self.col_embed(self.cols)
 
 
+class RelativePositionBias(nn.Module):
+    """Static (board-content-independent) attention bias keyed only by
+    the (Δrow, Δcol) offset between two intersections -- "C: Static
+    relative bias" in docs/board-specification.md §6, the same idea as
+    maia3's RelativeBias (maia3/models.py:21-34), reimplemented with a
+    gather instead of a dense one-hot matmul.
+
+    maia3's version expands its (2*7+1)^2=225-bin learned gate to the
+    full 64x64 chess bias via `gate @ one_hot_factorizer`, where the
+    factorizer buffer is (225, 4096) -- 3.7MB, fine at chess's fixed
+    8x8. The same trick at N=13 needs a (625, 28561) buffer (~71MB);
+    at N=19, (1369, 130321) (~714MB) -- a non-trainable buffer that
+    size is a real cost on a CPU-only box, not a rounding error. The
+    fix: precompute an integer bin-index buffer instead of a one-hot
+    float buffer, and read the bias out with indexing (`gate[:, idx]`)
+    instead of a matmul. Mathematically identical result; the (num_
+    tokens, num_tokens) index buffer is ~114KB at N=13 regardless.
+
+    Only the learned `gate` (nheads * (2*board_size-1)^2 floats, e.g.
+    8*625=5,000 at N=13) counts toward model size -- see the doc's
+    pros/cons table for why this is the cheap, interpretable ablation
+    step before GAB.
+    """
+
+    def __init__(self, board_size: int, nheads: int):
+        super().__init__()
+        self.board_size = board_size
+        self.nheads = nheads
+
+        bins_per_axis = 2 * board_size - 1  # Δ ranges -(N-1)..(N-1)
+        self.num_bins = bins_per_axis * bins_per_axis
+
+        rows = torch.arange(board_size).repeat_interleave(board_size)
+        cols = torch.arange(board_size).repeat(board_size)
+        # (num_tokens, num_tokens): delta_row[i, j] = row_i - row_j
+        delta_row = rows.unsqueeze(1) - rows.unsqueeze(0)
+        delta_col = cols.unsqueeze(1) - cols.unsqueeze(0)
+        bin_index = ((delta_row + (board_size - 1)) * bins_per_axis
+                     + (delta_col + (board_size - 1)))
+        self.register_buffer('bin_index', bin_index.long(), persistent=False)
+
+        self.gate = nn.Parameter(torch.zeros(nheads, self.num_bins))
+
+    def forward(self) -> torch.Tensor:
+        """Returns (nheads, num_tokens, num_tokens) -- content-
+        independent, so callers compute this once per forward pass and
+        expand across the batch, not once per example."""
+        return self.gate[:, self.bin_index]
+
+
 class TokenTransformerNet(nn.Module):
     def __init__(
         self,
@@ -61,12 +113,23 @@ class TokenTransformerNet(nn.Module):
         num_layers: int = 4,
         dim_feedforward: int = 128,
         dropout: float = 0.0,
+        pos_mode: str = 'absolute',
     ):
         super().__init__()
         self.spec = spec or BoardSpec()
+        self.nhead = nhead
+
+        if pos_mode not in ('absolute', 'relative'):
+            raise ValueError(
+                f"pos_mode={pos_mode!r}; expected 'absolute' (stage 1) or "
+                "'relative' (stage 2) -- 'gab' (stage 3) isn't built yet.")
+        self.pos_mode = pos_mode
 
         self.input_proj = nn.Linear(self.spec.token_dim, d_model)
-        self.pos_embed = RowColPositionalEmbedding(self.spec.board_size, d_model)
+        if pos_mode == 'absolute':
+            self.pos_embed = RowColPositionalEmbedding(self.spec.board_size, d_model)
+        else:
+            self.relative_bias = RelativePositionBias(self.spec.board_size, nhead)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -94,8 +157,24 @@ class TokenTransformerNet(nn.Module):
     def forward(self, x: torch.Tensor):
         # x: (B, num_tokens, token_dim)
         h = self.input_proj(x)
-        h = self.pos_embed(h)
-        h = self.transformer(h)  # (B, num_tokens, d_model)
+
+        if self.pos_mode == 'absolute':
+            h = self.pos_embed(h)
+            attn_mask = None
+        else:
+            batch_size = h.size(0)
+            # (H, T, T) -> (B*H, T, T): nn.MultiheadAttention (which
+            # nn.TransformerEncoderLayer wraps) requires a 3D attn_mask
+            # shaped exactly (batch*num_heads, L, S) -- same expansion
+            # maia3's MHA.forward does for its own bias (models.py:148-153).
+            # Content-independent, so it's identical across the batch;
+            # only per-head, not per-example.
+            bias = self.relative_bias()  # (H, T, T)
+            attn_mask = (bias.unsqueeze(0)
+                         .expand(batch_size, -1, -1, -1)
+                         .reshape(batch_size * self.nhead, bias.size(1), bias.size(2)))
+
+        h = self.transformer(h, mask=attn_mask)  # (B, num_tokens, d_model)
 
         spatial_logits = self.policy_head(h).squeeze(-1)  # (B, num_tokens)
 

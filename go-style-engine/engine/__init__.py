@@ -4,10 +4,10 @@ from .gotypes import Player, Point
 from .mcts import StyleKnobs, ZeroAgent
 from .network import GoZeroNet
 from .token_encoder import BoardSpec, TokenEncoder
-from .token_transformer import TokenTransformerNet
+from .token_transformer import RelativePositionBias, TokenTransformerNet
 
 __all__ = [
     'GameState', 'Move', 'Player', 'Point',
     'ZeroEncoder', 'StyleKnobs', 'ZeroAgent', 'GoZeroNet',
-    'BoardSpec', 'TokenEncoder', 'TokenTransformerNet',
+    'BoardSpec', 'TokenEncoder', 'TokenTransformerNet', 'RelativePositionBias',
 ]
