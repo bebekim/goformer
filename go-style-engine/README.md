@@ -17,6 +17,15 @@ on-device spike, which this is a complementary, cheaper alternative to
 - `docs/mcts-trace-walkthrough.md` — a from-zero explanation of how the
   engine picks a move, built around an instrumented run of
   `trace_move.py`. Start here if the search/knob machinery is new to you.
+- `docs/board-specification.md` — the intersection-token board
+  representation for the Transformer body (`engine/token_encoder.py`,
+  `engine/token_transformer.py`), parameterized by board size, plus the
+  staged plan for how it gets positional/attention-bias information.
+- `docs/from-transformer-to-trans-go-former.md` — a from-zero
+  explanation of the original Transformer architecture and exactly what
+  changed at each step to get from "reads a sentence" to "reads a
+  Baduk board." Start here if the Transformer/GAB machinery is new to
+  you.
 
 ## What this is for
 
