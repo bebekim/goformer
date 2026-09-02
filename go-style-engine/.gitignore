@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+runs/
+checkpoints/
+.pytest_cache/
+.DS_Store
+\#*#
+*~
