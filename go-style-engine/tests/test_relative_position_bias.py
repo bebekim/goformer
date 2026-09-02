@@ -6,6 +6,7 @@ Mirrors tests/test_token_transformer.py's shape of coverage for stage
 TokenTransformerNet(pos_mode='relative'), then a ZeroAgent smoke test.
 """
 import torch
+import torch.nn.functional as F
 import pytest
 
 from engine.goboard import GameState
@@ -121,6 +122,39 @@ class TestTokenTransformerNetRelativeMode:
         with pytest.raises(ValueError):
             TokenTransformerNet(BoardSpec(board_size=9), pos_mode='gab')
 
+    def test_eval_mode_after_training_step_produces_no_nan(self):
+        # Regression test for a real PyTorch nn.MultiheadAttention
+        # fastpath bug: with a float attn_mask (what RelativePositionBias
+        # injects), eval() mode after a real gradient step can silently
+        # return NaN -- does NOT reproduce in train() mode or with a
+        # freshly initialized model, which is why every OTHER test in
+        # this file (all forward-pass-only, no training) missed it. Fixed
+        # by torch.backends.mha.set_fastpath_enabled(False) at import
+        # time in token_transformer.py; this test is what would catch a
+        # regression if that guard were ever removed.
+        spec, model = self.tiny_net(9)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+        x = torch.randn(1, spec.num_tokens, spec.token_dim)
+        policy_target = torch.full((1, spec.num_moves), 1.0 / spec.num_moves)
+        value_target = torch.tensor([0.5])
+
+        model.train()
+        for _ in range(3):
+            policy_logits, value = model(x)
+            log_probs = F.log_softmax(policy_logits, dim=1)
+            loss = (-(policy_target * log_probs).sum(dim=1).mean()
+                    + F.mse_loss(value, value_target))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            policy_logits, value = model(x)
+        assert torch.isfinite(policy_logits).all()
+        assert torch.isfinite(value).all()
+
 
 class TestZeroAgentIntegrationRelativeMode:
     def test_select_move_runs_on_tiny_board(self):
@@ -142,3 +176,70 @@ class TestZeroAgentIntegrationRelativeMode:
 
         assert move is not None
         assert -1.0 <= diag['root_value'] <= 1.0
+
+
+class TestTokenTransformerNetBothMode:
+    """pos_mode='both' -- diagnostic-only combination of absolute PE +
+    relative bias simultaneously, added to test the pooling hypothesis
+    in docs/board-specification.md §7 (does giving token CONTENT a
+    position signal, on top of the attention-bias-only signal
+    'relative' provides alone, let the value head's mean-pooling learn
+    at all). Not a fourth staged option -- see the module docstring."""
+
+    def tiny_net(self, n, **kwargs):
+        spec = BoardSpec(board_size=n, history_depth=1)
+        model = TokenTransformerNet(
+            spec, d_model=16, nhead=2, num_layers=2, dim_feedforward=32,
+            pos_mode='both', **kwargs,
+        )
+        return spec, model
+
+    def test_builds_both_submodules(self):
+        _, model = self.tiny_net(9)
+        assert hasattr(model, 'pos_embed')
+        assert hasattr(model, 'relative_bias')
+
+    @pytest.mark.parametrize('n', BOARD_SIZES)
+    def test_forward_shapes(self, n):
+        spec, model = self.tiny_net(n)
+        x = torch.randn(3, spec.num_tokens, spec.token_dim)
+        policy_logits, value = model(x)
+        assert policy_logits.shape == (3, spec.num_moves)
+        assert value.shape == (3,)
+
+    def test_gradients_flow_to_both_positional_mechanisms(self):
+        spec, model = self.tiny_net(9)
+        x = torch.randn(2, spec.num_tokens, spec.token_dim)
+        policy_logits, value = model(x)
+        (policy_logits.sum() + value.sum()).backward()
+
+        assert model.pos_embed.row_embed.weight.grad is not None
+        assert model.relative_bias.gate.grad is not None
+        for name, p in model.named_parameters():
+            assert p.grad is not None, f'{name} got no gradient'
+            assert torch.isfinite(p.grad).all(), f'{name} got a non-finite gradient'
+
+    def test_eval_mode_after_training_step_produces_no_nan(self):
+        # Same fastpath regression coverage as the relative-only test,
+        # since 'both' also injects a float attn_mask.
+        spec, model = self.tiny_net(9)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+        x = torch.randn(1, spec.num_tokens, spec.token_dim)
+        policy_target = torch.full((1, spec.num_moves), 1.0 / spec.num_moves)
+        value_target = torch.tensor([0.5])
+
+        model.train()
+        for _ in range(3):
+            policy_logits, value = model(x)
+            log_probs = F.log_softmax(policy_logits, dim=1)
+            loss = (-(policy_target * log_probs).sum(dim=1).mean()
+                    + F.mse_loss(value, value_target))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            policy_logits, value = model(x)
+        assert torch.isfinite(policy_logits).all()
+        assert torch.isfinite(value).all()

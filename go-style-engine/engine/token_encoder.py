@@ -105,3 +105,11 @@ class TokenEncoder:
         row = index // N
         col = index % N
         return Move.play(Point(row=row + 1, col=col + 1))
+
+    def num_moves(self) -> int:
+        """Method, not just BoardSpec.num_moves as a property, to match
+        ZeroEncoder's API exactly -- engine/mcts.py's ZeroAgent calls
+        self.encoder.num_moves() (only reached when a collector is
+        attached, e.g. by selfplay.py -- that's why this gap survived
+        the earlier ZeroAgent smoke tests, which never attach one)."""
+        return self.spec.num_moves

@@ -34,7 +34,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from engine import GameState, Player, StyleKnobs, ZeroAgent, ZeroEncoder, GoZeroNet
+from engine import (GameState, Player, StyleKnobs, ZeroAgent, ZeroEncoder, GoZeroNet,
+                    BoardSpec, TokenEncoder, TokenTransformerNet)
 from engine.experience import ZeroExperienceCollector, combine_experience
 
 # Illustrative starting points for the four PRD trainee archetypes.
@@ -61,6 +62,26 @@ def build_knobs(preset_name, overrides):
         if cli_value is not None:
             setattr(base, field.name, cli_value)
     return base
+
+
+def build_encoder_and_model(args):
+    """net_type='cnn' (default) is the original ZeroEncoder/GoZeroNet
+    path. net_type='token' builds the trans-go-former body instead
+    (engine/token_encoder.py, engine/token_transformer.py) -- see
+    docs/board-specification.md. Both sides honor the same
+    encode/decode_move_index/predict contract, so nothing else in this
+    file (play_one_game, ZeroAgent) needs to know which one it got."""
+    if args.net_type == 'cnn':
+        encoder = ZeroEncoder(args.board_size)
+        model = GoZeroNet(args.board_size, channels=args.channels, num_blocks=args.blocks)
+    else:
+        spec = BoardSpec(board_size=args.board_size, history_depth=args.history_depth)
+        encoder = TokenEncoder(spec)
+        model = TokenTransformerNet(
+            spec, d_model=args.d_model, nhead=args.nhead,
+            num_layers=args.num_layers, dim_feedforward=args.dim_feedforward,
+            pos_mode=args.pos_mode)
+    return encoder, model
 
 
 def _git_sha():
@@ -148,8 +169,15 @@ def _write_manifest(out_dir, args, black_knobs, white_knobs, sha, torch_version,
             'temperature': args.temperature,
             'dirichlet_epsilon': args.dirichlet_epsilon,
             'checkpoint': args.checkpoint,
+            'net_type': args.net_type,
             'channels': args.channels,
             'blocks': args.blocks,
+            'pos_mode': args.pos_mode,
+            'history_depth': args.history_depth,
+            'd_model': args.d_model,
+            'nhead': args.nhead,
+            'num_layers': args.num_layers,
+            'dim_feedforward': args.dim_feedforward,
             'max_moves': args.max_moves,
             'device': args.device,
             'seed': args.seed,
@@ -184,6 +212,8 @@ def _check_resume_compatibility(manifest, args):
         ('white_preset', args.white_preset, m.get('white_preset')),
         ('seed', args.seed, m.get('seed')),
         ('checkpoint', args.checkpoint, m.get('checkpoint')),
+        ('net_type', args.net_type, m.get('net_type')),
+        ('pos_mode', args.pos_mode, m.get('pos_mode')),
     ]
     for name, current, stored in checks:
         if current != stored:
@@ -255,8 +285,27 @@ def main():
     parser.add_argument('--dirichlet-epsilon', type=float, default=None)
     parser.add_argument('--checkpoint', type=str, default=None,
                          help='PyTorch state_dict to load for both agents; random init if omitted')
-    parser.add_argument('--channels', type=int, default=64)
-    parser.add_argument('--blocks', type=int, default=6)
+    parser.add_argument('--net-type', choices=('cnn', 'token'), default='cnn',
+                         help="'cnn' = ZeroEncoder/GoZeroNet (default); "
+                              "'token' = TokenEncoder/TokenTransformerNet "
+                              "(docs/board-specification.md)")
+    parser.add_argument('--channels', type=int, default=64,
+                         help='net-type=cnn only')
+    parser.add_argument('--blocks', type=int, default=6,
+                         help='net-type=cnn only')
+    parser.add_argument('--pos-mode', choices=('absolute', 'relative', 'both'), default='absolute',
+                         help='net-type=token only: TokenTransformerNet positional-info '
+                              'mode, see docs/board-specification.md §6')
+    parser.add_argument('--history-depth', type=int, default=7,
+                         help='net-type=token only: BoardSpec.history_depth')
+    parser.add_argument('--d-model', type=int, default=64,
+                         help='net-type=token only')
+    parser.add_argument('--nhead', type=int, default=4,
+                         help='net-type=token only')
+    parser.add_argument('--num-layers', type=int, default=4,
+                         help='net-type=token only')
+    parser.add_argument('--dim-feedforward', type=int, default=128,
+                         help='net-type=token only')
     parser.add_argument('--max-moves', type=int, default=None,
                          help='default: 2 * board_size^2')
     parser.add_argument('--device', type=str, default='cpu')
@@ -283,8 +332,7 @@ def main():
     black_knobs = build_knobs(args.black_preset, overrides)
     white_knobs = build_knobs(args.white_preset, overrides)
 
-    encoder = ZeroEncoder(args.board_size)
-    model = GoZeroNet(args.board_size, channels=args.channels, num_blocks=args.blocks)
+    encoder, model = build_encoder_and_model(args)
     if args.checkpoint:
         model.load_state_dict(torch.load(args.checkpoint, map_location=args.device))
     model.to(args.device)

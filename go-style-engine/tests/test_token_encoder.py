@@ -156,3 +156,11 @@ class TestMoveIndexCompatibility:
         for index in (0, n * n // 2, n * n - 1, n * n):
             move = encoder.decode_move_index(index)
             assert encoder.encode_move(move) == index
+
+    @pytest.mark.parametrize('n', BOARD_SIZES)
+    def test_num_moves_matches_zero_encoder(self, n):
+        # method, not just BoardSpec.num_moves as a property -- ZeroAgent
+        # (engine/mcts.py) calls self.encoder.num_moves() directly.
+        token_encoder = TokenEncoder(BoardSpec(board_size=n))
+        zero_encoder = ZeroEncoder(n)
+        assert token_encoder.num_moves() == zero_encoder.num_moves() == n * n + 1

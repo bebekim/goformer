@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import torch
 
+from engine.experience import ZeroExperienceCollector
 from engine.goboard import GameState
 from engine.gotypes import Player
 from engine.mcts import StyleKnobs, ZeroAgent
@@ -124,6 +125,32 @@ class TestZeroAgentIntegration:
         assert move is not None
         assert 'root_value' in diag
         assert -1.0 <= diag['root_value'] <= 1.0
+
+    def test_select_move_with_collector_attached(self):
+        # Regression test: engine/mcts.py's select_move only calls
+        # self.encoder.num_moves() when a collector is attached (the
+        # path selfplay.py always exercises, to save experience shards).
+        # TokenEncoder was missing that method entirely until this test
+        # was added -- the test above never caught it because it never
+        # attaches a collector.
+        board_size = 5
+        spec = BoardSpec(board_size=board_size, history_depth=1)
+        model = TokenTransformerNet(
+            spec, d_model=16, nhead=2, num_layers=1, dim_feedforward=32,
+        )
+        encoder = TokenEncoder(spec)
+        agent = ZeroAgent(model, encoder, StyleKnobs(rounds_per_move=10), seed=0)
+        collector = ZeroExperienceCollector()
+        agent.set_collector(collector)
+        collector.begin_episode()
+
+        game = GameState.new_game(board_size)
+        move, diag = agent.select_move(game)
+        collector.complete_episode(reward=0)
+
+        assert move is not None
+        assert len(collector.states) == 1
+        assert collector.visit_counts[0].shape == (spec.num_moves,)
 
     def test_play_a_few_moves(self):
         board_size = 5

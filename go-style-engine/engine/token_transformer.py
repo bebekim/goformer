@@ -13,6 +13,16 @@ shipped preset sets exactly one) so the modes stay independently
 A/B-able -- the point of staging is to measure each one's marginal
 contribution, not to accumulate them.
 
+pos_mode='both' is a fourth, DIAGNOSTIC-ONLY option, not a stage: it
+runs absolute PE and relative bias simultaneously, added specifically to
+test the working hypothesis in docs/board-specification.md §7 -- that
+stage 2 alone plateaus on the value target because pos_mode='relative'
+never puts position into token CONTENT (only into attention weighting),
+so the value head's h.mean(dim=1) pooling has nothing location-aware to
+pool. If 'both' learns the value target like 'absolute' does, that
+confirms the hypothesis and is a direct warning for stage 3 (GAB), which
+also runs with no separate absolute PE in every shipped Maia3 config.
+
 Matches GoZeroNet's external interface deliberately (predict(state_tensor,
 device) -> (priors, value)) so it is a drop-in swap for ZeroAgent in
 mcts.py -- same encoder/model contract, different internals.
@@ -24,6 +34,20 @@ import torch.nn.functional as F
 from .token_encoder import BoardSpec
 
 __all__ = ['RowColPositionalEmbedding', 'RelativePositionBias', 'TokenTransformerNet']
+
+# nn.MultiheadAttention's fused "fastpath" kernel has a real numerical bug:
+# in eval() mode, with a non-causal float attn_mask (exactly what
+# RelativePositionBias -- and GAB later -- inject), it can silently return
+# NaN for certain trained weight values. Confirmed by direct repro: does
+# NOT happen in train() mode, and does NOT happen with a freshly
+# initialized (untrained) model -- only after real gradient steps move the
+# weights, which is why none of stage 2's unit tests caught it (none of
+# them trained first). Disabling the fastpath is the documented PyTorch
+# workaround. Cost is a slower nn.MultiheadAttention on CPU, acceptable
+# here since this whole project is CPU-only by design already. Global
+# (not per-module) because the bug is in a shared backend, and because
+# GAB (stage 3) will use the same attn_mask injection mechanism.
+torch.backends.mha.set_fastpath_enabled(False)
 
 
 class RowColPositionalEmbedding(nn.Module):
@@ -119,16 +143,17 @@ class TokenTransformerNet(nn.Module):
         self.spec = spec or BoardSpec()
         self.nhead = nhead
 
-        if pos_mode not in ('absolute', 'relative'):
+        if pos_mode not in ('absolute', 'relative', 'both'):
             raise ValueError(
-                f"pos_mode={pos_mode!r}; expected 'absolute' (stage 1) or "
-                "'relative' (stage 2) -- 'gab' (stage 3) isn't built yet.")
+                f"pos_mode={pos_mode!r}; expected 'absolute' (stage 1), "
+                "'relative' (stage 2), or 'both' (diagnostic, see module "
+                "docstring) -- 'gab' (stage 3) isn't built yet.")
         self.pos_mode = pos_mode
 
         self.input_proj = nn.Linear(self.spec.token_dim, d_model)
-        if pos_mode == 'absolute':
+        if pos_mode in ('absolute', 'both'):
             self.pos_embed = RowColPositionalEmbedding(self.spec.board_size, d_model)
-        else:
+        if pos_mode in ('relative', 'both'):
             self.relative_bias = RelativePositionBias(self.spec.board_size, nhead)
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -158,10 +183,11 @@ class TokenTransformerNet(nn.Module):
         # x: (B, num_tokens, token_dim)
         h = self.input_proj(x)
 
-        if self.pos_mode == 'absolute':
+        if self.pos_mode in ('absolute', 'both'):
             h = self.pos_embed(h)
-            attn_mask = None
-        else:
+
+        attn_mask = None
+        if self.pos_mode in ('relative', 'both'):
             batch_size = h.size(0)
             # (H, T, T) -> (B*H, T, T): nn.MultiheadAttention (which
             # nn.TransformerEncoderLayer wraps) requires a 3D attn_mask
