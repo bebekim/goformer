@@ -139,10 +139,21 @@ Expect: style separation grows quickly to 0.05, then flattens; win-rate stays fl
 
 ## 5. What to build next in code
 
-- [ ] Add `--equal-value-tolerance` / `--c` / `--complexity-weight` / `--safety-lambda` passthrough to selfplay.py tournament scripts (currently `build_knobs` already supports overrides — expose them).
-- [ ] Add `MetaPreset` wrapper in `engine/mcts.py` that composes `base_knobs + psychology_fn(state)` before `choose_from_root`. Keep `StyleKnobs` as the primitive.
-- [ ] Add post-tournament analysis script `analyze_style.py` that reads `runs/*/games.jsonl` and emits win-rate + complexity/variance histograms + viable_count distribution (the 3 numbers that prove style-without-tanking).
-- [ ] Consider a prior-shaping variant (reweight child policy entropy before search) only if post-selection style is too subtle at 200 rounds. Prior shaping amplifies style earlier but risks larger strength loss — keep it behind a flag.
+Status checked directly against the tree (not assumed) while drafting
+`../../Specs/008-tolerance-cli-and-style-analysis-script.md`, which now
+tracks items 1 and 3 as an actionable spec:
+
+- [x] `--c` / `--complexity-weight` / `--safety-lambda` passthrough —
+      already implemented in `selfplay.py`'s `build_knobs`.
+- [ ] `--equal-value-tolerance` passthrough — **still missing**, the one
+      real gap in this line item. Tracked in `Specs/008`.
+- [ ] Add `MetaPreset` wrapper in `engine/mcts.py` that composes `base_knobs + psychology_fn(state)` before `choose_from_root`. Keep `StyleKnobs` as the primitive. Deliberately *not* bundled into `Specs/008` (see that spec's Decision Log) — a real design decision, not a mechanical gap; becomes its own spec once `Specs/007`'s tournament data gives a concrete reason to want it.
+- [ ] Add post-tournament analysis script `analyze_style.py` that reads `runs/*/games.jsonl` and emits win-rate + complexity/variance histograms + viable_count distribution (the 3 numbers that prove style-without-tanking). Tracked in `Specs/008`.
+- [ ] Consider a prior-shaping variant (reweight child policy entropy before search) only if post-selection style is too subtle at 200 rounds. Prior shaping amplifies style earlier but risks larger strength loss — keep it behind a flag. Still gated on that condition, which `Specs/007`'s tournament (once run) is what will actually tell us — not yet its own spec.
+
+The experiment in §4 itself — the thing all of this tooling serves —
+is tracked as `../../Specs/007-style-without-strength-loss-validation.md`.
+As of this note, it has never been run.
 
 ## 6. Connection back to character conversation
 

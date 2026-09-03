@@ -686,6 +686,14 @@ and a materially bigger undertaking than anything else in §8.
 
 ## 9. Explicitly deferred (not part of this spec)
 
+Every item below is now tracked as a real work item in `../../Specs/`
+(this repo's night-shift spec queue, one level up from `go-style-engine/`),
+not just prose here: `003` (the iterative self-play loop), `004`
+(re-reading `relative`/`both`/`absolute` at their best epoch), `005`
+(the full per-square GAB variant), `006` (the group-topology
+interpretability question, `needs-clarification`). This section stays
+as the narrative record of *why*; the specs are the actionable *what*.
+
 - **The follow-ups §8a-§8e surfaced**: `weight_decay` is settled
   (inert, don't pursue further); `gab_gen_size=16` is settled as the
   practical default, confirmed best at *both* data volumes tested
