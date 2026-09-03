@@ -37,6 +37,13 @@ set -euo pipefail
 # DROPOUT/BOARD_SIZE, same as any --in-checkpoint/--checkpoint use
 # elsewhere in this codebase -- mismatched architecture will fail to
 # load, not silently misbehave.
+#
+# START_GEN (default: 1): resume an interrupted run at a specific
+# generation number instead of restarting from 1 -- combine with
+# INIT_CKPT pointing at the last completed generation's checkpoint and
+# the SAME OUT_DIR/CKPT_DIR (so the existing buffer/ is reused, not
+# recreated) to continue exactly where a stopped run left off, without
+# clobbering or discarding the generations already done.
 
 NUM_GENERATIONS="${1:-5}"
 BOARD_SIZE="${BOARD_SIZE:-9}"
@@ -53,6 +60,7 @@ SEED_BASE="${SEED_BASE:-0}"
 PYTHON="${PYTHON:-.venv/bin/python}"
 INIT_CKPT="${INIT_CKPT:-}"
 BUFFER="${BUFFER:-1}"
+START_GEN="${START_GEN:-1}"
 
 mkdir -p "$OUT_DIR" "$CKPT_DIR"
 SUMMARY="$OUT_DIR/summary.jsonl"
@@ -69,7 +77,7 @@ echo "  summary=$SUMMARY"
 echo
 
 PREV_CKPT="$INIT_CKPT"
-for gen in $(seq 1 "$NUM_GENERATIONS"); do
+for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
   GEN_TAG="gen${gen}"
   SEED=$((SEED_BASE + gen))
   SP_OUT="$OUT_DIR/${GEN_TAG}_selfplay"
