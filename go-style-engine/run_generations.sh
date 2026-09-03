@@ -23,6 +23,15 @@ set -euo pipefail
 # All settings below default to §8's settled config
 # (docs/board-specification.md §8e) and can be overridden via env vars,
 # e.g.: BOARD_SIZE=13 GAMES=60 ./run_generations.sh 8
+#
+# INIT_CKPT (default: unset, i.e. random init, the original behavior):
+# seed generation 1's self-play from an existing checkpoint instead of
+# random weights -- e.g. a kifu-pretrained base (Specs/011), so
+# refinement starts from real signal instead of the random-generator
+# regime §8d/§8e showed plateaus. Must match POS_MODE/GAB_GEN_SIZE/
+# DROPOUT/BOARD_SIZE, same as any --in-checkpoint/--checkpoint use
+# elsewhere in this codebase -- mismatched architecture will fail to
+# load, not silently misbehave.
 
 NUM_GENERATIONS="${1:-5}"
 BOARD_SIZE="${BOARD_SIZE:-9}"
@@ -37,6 +46,7 @@ OUT_DIR="${OUT_DIR:-runs/gen_loop}"
 CKPT_DIR="${CKPT_DIR:-checkpoints/gen_loop}"
 SEED_BASE="${SEED_BASE:-0}"
 PYTHON="${PYTHON:-.venv/bin/python}"
+INIT_CKPT="${INIT_CKPT:-}"
 
 mkdir -p "$OUT_DIR" "$CKPT_DIR"
 SUMMARY="$OUT_DIR/summary.jsonl"
@@ -48,7 +58,7 @@ echo "  out_dir=$OUT_DIR ckpt_dir=$CKPT_DIR"
 echo "  summary=$SUMMARY"
 echo
 
-PREV_CKPT=""
+PREV_CKPT="$INIT_CKPT"
 for gen in $(seq 1 "$NUM_GENERATIONS"); do
   GEN_TAG="gen${gen}"
   SEED=$((SEED_BASE + gen))
