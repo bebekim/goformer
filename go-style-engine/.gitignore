@@ -10,3 +10,11 @@ checkpoints/
 
 # Personal infra details (sailbox IDs, devbox setup) -- not for a public repo
 docs/unattended-generation-loop.md
+
+# Game-record data: fetched fresh via data/fetch_go_games.sh, not
+# committed -- both source archives are from a stable public site
+# (see that script's header), so the script is the artifact to
+# version, not a copy of someone else's data.
+data/9x9/
+data/games/
+data/go-games.tgz
