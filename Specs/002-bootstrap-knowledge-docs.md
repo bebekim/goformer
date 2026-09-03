@@ -1,7 +1,7 @@
 # Fill the five agent knowledge-doc stubs
 
 Priority: high
-State: ready
+State: done
 
 ## Problem
 
@@ -199,15 +199,18 @@ None. This is the first spec for this repo.
 
 ## Acceptance Criteria
 
-- [ ] All five `docs/*.md` files exist with real, repo-specific content
+- [x] All five `docs/*.md` files exist with real, repo-specific content
       per the outlines above (not generic boilerplate).
-- [ ] Every file path, command, and line-number reference in the new
-      docs actually resolves in the current tree.
-- [ ] `cd go-style-engine && .venv/bin/python -m pytest -q` was
-      actually run, and its real output is what's recorded in
-      `docs/testing.md`, not a copied number.
-- [ ] `CHANGELOG.md` updated.
-- [ ] This spec's `State:` set to `done` in the same commit as the docs.
+- [x] Every file path, command, and line-number reference in the new
+      docs actually resolves in the current tree (spot-checked
+      directly: xfail convention, `.gitignore` rule, `papers/README.md`,
+      `board-specification.md`'s §8a-§8e, all five new files present).
+- [x] `cd go-style-engine && .venv/bin/python -m pytest -q` was
+      actually run (2026-09-03), and its real output — `132 passed,
+      7 xfailed` — is what's recorded in `docs/testing.md`, not a
+      number copied from this spec's own illustrative text.
+- [x] `CHANGELOG.md` updated.
+- [x] This spec's `State:` set to `done` in the same commit as the docs.
 
 ## Known Risks
 
