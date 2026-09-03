@@ -38,3 +38,30 @@ Work items and observations. Promote ready ones into `Specs/` using
     `002-bootstrap-knowledge-docs.md`) launched successfully (ran past
     120s doing real work, moved to background, instead of the
     immediate stale-path error from before the reload).
+
+- **`sail-subs` reliability on this repo: two failed attempts, possible
+  `papers/*.pdf` context-bloat cause** (2026-09-03). Both real attempts
+  to delegate `002-bootstrap-knowledge-docs.md` via `sail-subs` failed
+  (see that spec's Decision Log entries #2-#4 for full detail) — not
+  from any pipeline/environment problem (setup commands passed, repo
+  checkout worked both times), but from the worker itself: attempt 1
+  never engaged with the task at all (generic "I don't see a question"
+  response, 0 edits); attempt 2 explored the repo properly (`ls`,
+  `git log`, read `papers/README.md`) but consumed **271,074 input
+  tokens** doing it and then produced incoherent output, 0 edits.
+  **Hypothesis, not confirmed:** `papers/` holds several multi-MB PDFs,
+  git-tracked, so present in any full-repo checkout — if the worker's
+  file-reading swept PDF content into context as raw text (rather than
+  skipping binaries or extracting only what's needed), that would
+  plausibly explain both the token blowout and a fast/cheap default
+  model's coherence collapse under that much junk context.
+  - To test: try a `sail-subs` delegation on a task that explicitly
+    avoids touching `papers/` (or on a smaller test repo with no large
+    binaries) and see if it behaves normally. If confirmed, either
+    keep `papers/` out of future delegation checkouts somehow (unclear
+    if `sail_delegate`'s `paths` parameter can *exclude* rather than
+    only declare ownership) or reconsider whether `sail-subs` is
+    reliable for this repo at all until that's fixed upstream.
+  - Not investigated further as of this note — `002` was executed
+    directly instead once two failures established a real, not
+    infra-level, problem.
