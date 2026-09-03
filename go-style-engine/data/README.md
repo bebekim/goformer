@@ -1,19 +1,28 @@
 # data/
 
 Real Go game records, used as training/reference data — not generated
-by this project's own self-play. Not committed to git: both source
-archives come from a stable public site
-([homepages.cwi.nl/~aeb/go/games/](https://homepages.cwi.nl/~aeb/go/games/)),
-so the thing worth versioning is the fetch logic, not a copy of
-someone else's data.
+by this project's own self-play. This directory holds only this
+project's own *derived* training-format artifacts (`.npz` shards, via
+`kifu_to_experience.py` per `../../Specs/009-sgf-kifu-supervised-training-pipeline.md`)
+— none of it is committed, all of it is reproducible.
+
+Fetching the raw archives and parsing SGF into normalized game records
+is no longer done here — that now lives in a separate, sibling repo,
+[`go-gibo-ingestion`](../../../go-gibo-ingestion), decoupled from this
+model-training repo the same way `nem-forecast-orchestration` is split
+from `nem-forecast`. Run it first:
 
 ```sh
-./fetch_go_games.sh          # 9x9 archive only (small, ~2MB)
-./fetch_go_games.sh --full   # also the full corpus (~46MB, mostly 19x19)
+cd ~/repositories/individual/go-gibo-ingestion
+.venv/bin/python fetch.py
+.venv/bin/python ingest.py --input data/raw/9x9 --archive-name 9x9 \
+  --output data/parsed/9x9.jsonl
 ```
 
-See `fetch_go_games.sh`'s header comment for exactly what's in each
-archive, current counts, and why this data matters (a direct response
-to `../docs/board-specification.md` §8d/§8e's finding that self-play
-from a random, never-trained net is a weak signal source regardless of
-volume — see `Specs/009`).
+Then, from here, `kifu_to_experience.py` reads that JSONL and produces
+`.npz` shards `train.py` can consume — see `Specs/009` and that
+script's own `--help` for details, including the human-only game
+filter (`go-gibo-ingestion`'s README documents why: most of the 9x9
+archive is AI self-play, not human kifu, and that distinction matters
+for what this data is used to validate — see
+`../docs/board-specification.md` §8d/§8e).
