@@ -4,6 +4,21 @@ Repository changes worth human review should be summarized here.
 
 ## Unreleased
 
+- **Correction to the entry below**: the "value head fails to learn at
+  all on real human data" finding was wrong. Extending to a real
+  13x13 human dataset (110 games via `go-gibo-ingestion`'s newly
+  board-size-agnostic pipeline) surfaced one config (`pos_mode='both'`)
+  that broke through where others didn't, which traced back to
+  `--early-stopping-patience 3` (tuned for self-play data in §8c)
+  cutting most configs off epochs before a real, later breakthrough —
+  not a genuine learning failure. Re-running `absolute` with a much
+  longer patience budget confirmed the breakthrough at *both* board
+  sizes, including the original 9x9 dataset. Full corrected account,
+  the 13x13 extension, and what's still genuinely unresolved (whether
+  `gab_absolute` shares this pattern) in `docs/board-specification.md`
+  §8g; §8f kept as-written with a correction notice rather than
+  rewritten, per this repo's evidence-first convention. `Specs/009`
+  Decision Log #6.
 - Executed `Specs/009`: built `go-style-engine/data/kifu_to_experience.py`
   (go-gibo-ingestion JSONL -> train.py-compatible `.npz`, human-only
   80-game default) and re-ran §7/§8's GAB comparison on real human

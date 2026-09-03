@@ -214,6 +214,13 @@ if anything argues the result is real rather than sampling artifact
 section originally flagged did not materialize — verified clean by
 hand against real data, see Acceptance Criteria.
 
+**Update: §8f's headline finding above was itself wrong — see
+Decision Log #6 and `docs/board-specification.md` §8g.** It was an
+`--early-stopping-patience` artifact, not a real learning failure.
+Left here unedited as the record of what this spec's risk assessment
+got right (a genuine, reproducible result) and wrong (the wrong causal
+explanation for it) — see Decision Log #6 for what actually happened.
+
 ## Decision Log
 
 | # | Proposed | Status | Why |
@@ -223,3 +230,4 @@ hand against real data, see Acceptance Criteria.
 | 3 | Position-level train/val split (simpler to implement) vs. game-level split. | **Accepted: game-level** | Positions within one game are highly correlated (same board, adjacent history windows); a position-level split would leak information between train and val, understating true val loss the same way §8b's "wrong fixed epoch" problem understated overfitting — avoid a second, avoidable measurement bias. |
 | 4 | Own fetching and SGF parsing directly inside `go-style-engine/data/` (this spec's original scope) vs. split that work into a separate `go-gibo-ingestion` repo. | **Accepted: split into go-gibo-ingestion** | Ingestion concerns (fetching, parsing, validating source data) don't belong in a model-training repo — the same reasoning `nem-forecast-orchestration` is split from `nem-forecast`. Scoped deliberately light (plain fetch/parse scripts, no Dagster/dbt/DuckDB orchestrator) since there's one static source today, not several live feeds needing scheduling; escalate the tooling only if that changes. This spec's `Likely Files`/`Desired Behavior` were rewritten to match — the SGF-parsing work originally planned here now lives in that repo instead. |
 | 5 | Preserve player-identity metadata (`PB`/`PW`/`BR`/`WR`) for future personality-conditioning use, vs. drop it since nothing currently consumes it. | **Accepted: preserved upstream, not threaded through here** | `go-gibo-ingestion`'s JSONL already carries full `players` metadata per game (near-zero cost to keep at that layer); this spec's `.npz` output format has no metadata slot (matching `train.py`'s existing format exactly, unmodified) — a future style-conditioning spec that needs to correlate positions back to specific players can re-join against `go-gibo-ingestion`'s JSONL by `game_id` rather than needing it threaded through the training format now on spec. |
+| 6 | §8f's "value head does not learn on real human data" finding stood as written vs. investigating the one anomaly that didn't fit (`pos_mode='both'` uniquely broke through in a follow-up 13x13 extension of this same spec) before accepting it as final. | **Investigated — finding corrected, not confirmed** | Tracing why `both` alone succeeded led to the real cause: `--early-stopping-patience 3` (settled on self-play data in §8c) tracks *combined* policy+value loss, so a config whose policy loss keeps improving longer (as `both`'s did) gets more epochs of cover before patience exhausts than one whose policy plateaus early (`absolute`) or diverges (`gab_absolute`) — nothing to do with whether the value head *can* learn. Re-running `absolute` with a much longer patience budget confirmed it breaks through too, at both 9x9 (this spec's original dataset) and 13x13 — see `docs/board-specification.md` §8g for the full trace and the corrected conclusion. Documented as a correction, not a silent rewrite, per this file's own now-superseded §8f text and the Known Risks update above. |
