@@ -43,9 +43,3 @@ When there are no ready tasks left, produce a concise final report containing:
 - tests run
 - unresolved blockers
 - follow-up TODOs
-
-Then output:
-
-```text
-<promise>NIGHT_SHIFT_COMPLETE</promise>
-```
