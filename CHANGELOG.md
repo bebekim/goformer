@@ -4,6 +4,24 @@ Repository changes worth human review should be summarized here.
 
 ## Unreleased
 
+- Executed `Specs/011`, the first attempt to get `trans-go-former`
+  actually playing (not just architecture-comparison checkpoints):
+  kifu-pretrain (`pos_mode='both'`, §8g's corrected patience) then
+  8 generations of self-play refinement (`run_generations.sh`, now
+  supporting `INIT_CKPT` to seed from a real checkpoint instead of
+  random init). Result, honestly mixed: gen8 clearly beats a
+  random-init net (73.3% win rate, +8.2 mean score margin) but does
+  *not* clearly beat generation 1 (46.2%, a coin flip) — the loop's
+  gains came from kifu-pretraining plus the first few generations,
+  then plateaued/regressed as each generation trained on a shrinking,
+  non-accumulating dataset (`run_generations.sh`'s own documented
+  simplification). Qualitatively: sane opening/midgame play, but a
+  real endgame-termination weakness (games often hit the move cap
+  instead of double-passing). Full account in
+  `docs/board-specification.md` §11, including a determinism bug in
+  the first evaluation attempt (caught and fixed, same pitfall §7
+  already documented once). Diagnosed next lever: accumulate a
+  self-play replay buffer across generations.
 - **Correction to the entry below**: the "value head fails to learn at
   all on real human data" finding was wrong. Extending to a real
   13x13 human dataset (110 games via `go-gibo-ingestion`'s newly

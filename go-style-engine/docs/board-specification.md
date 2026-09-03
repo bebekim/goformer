@@ -1049,6 +1049,128 @@ it's `--early-stopping-patience` tuned for kifu training specifically
   error guard, and that patience actually stops training before
   `--epochs` completes.
 
+## 11. Playing strength: kifu-pretrain + self-play refine (`Specs/011`)
+
+Every checkpoint in §7-§8g exists to answer an architecture question,
+not to play well. The repo owner set a new, more direct goal: get
+`trans-go-former` playing semi-good 9x9 Go, phase 1, before any
+personality/style-word conditioning work (phase 2, unscoped). This
+section is that first attempt, combining two things this doc already
+established separately: kifu pretraining (§8f/§8g, now correctly
+understood to actually teach the value function) to escape the
+random-init self-play generator problem (§8d/§8e), then
+`run_generations.sh`'s self-play refinement loop (§9, `003`) seeded
+from that pretrained checkpoint instead of random weights.
+
+**Setup:** `pos_mode='both'` (not `gab_absolute` — §8g's unresolved
+divergence problem on real data made this an easy call; the goal here
+is "plays," not "uses the most sophisticated positional mechanism").
+Pretrained on `Specs/009`'s 80-game 9x9 human kifu set with
+`--epochs 60 --early-stopping-patience 15` (§8g's patience-correction
+applied). `run_generations.sh` gained an `INIT_CKPT` env var (default
+unset, unchanged behavior) to seed generation 1 from that checkpoint
+instead of random init; 8 generations run, `POS_MODE=both
+PATIENCE=15`, otherwise §8e's settled self-play/train config.
+
+**Pretrain step surfaced a real tradeoff worth naming plainly:**
+`train.py`'s own best-combined-loss checkpoint selection (epoch 16)
+has a genuinely informative policy (val_policy_loss 3.13, well below
+the ~4.4 a uniform-random policy over 82 moves would give) but value
+still unlearned (1.0043). Training further, value breaks through
+(down to 0.65 by epoch 31) but policy degrades back toward uniform
+(4.31) — a real policy/value tradeoff on this small, one-hot-target
+dataset, not noise. Used `train.py`'s own selection (favoring policy
+quality to bootstrap reasonable self-play move choices) rather than
+resolving this tradeoff by hand; self-play's own richer, soft
+MCTS-visit targets were expected to reshape both from there.
+
+**Generation-loop trend:**
+
+| generation | val_policy_loss | val_value_loss | positions | undecided-game rate |
+|---|---|---|---|---|
+| 1 | 2.5559 | 0.0000 | 2,430 (81.0/game) | 100% |
+| 2 | 2.4963 | 0.0393 | 2,182 (72.7/game) | 56% |
+| 3 | 2.4688 | 0.0252 | 2,242 (74.7/game) | 76% |
+| 4 | 2.4588 | 0.0183 | 1,811 (60.4/game) | 36% |
+| 5 | 2.8380 | 0.0408 | 1,409 (47.0/game) | 0% |
+| 6 | 2.8024 | 0.0385 | 1,472 (49.1/game) | 28% |
+| 7 | 2.9256 | 0.0147 | 1,376 (45.9/game) | 18% |
+| 8 | 2.8844 | 0.0507 | 1,408 (46.9/game) | 0% |
+
+Two real, distinct patterns, not one:
+
+- **Generation 1's near-zero value loss (0.00001) is an artifact, not
+  a signal** — every one of its 30 self-play games hit
+  `move_cap_reached` (undecided), so every position's reward target
+  was exactly 0; the value head trivially fit a constant, which is not
+  the same thing as learning to predict outcomes. This is worth
+  flagging precisely because it looks, from the number alone, like the
+  best generation in the table.
+- **Real improvement through generation 4, then a plateau/regression
+  from generation 5 on** (val_policy_loss 2.46 → 2.84-2.93), correlated
+  with games getting shorter and the per-generation dataset shrinking
+  (2,430 → ~1,400 positions) as `run_generations.sh`'s own documented
+  simplification bit: no replay buffer accumulates across generations,
+  so later generations train on less data than earlier ones, not more.
+
+**Evaluation — a real tournament, corrected mid-flight.** A first pass
+using default `StyleKnobs()` (deterministic, no search noise) produced
+literally identical scores across all 20 "games" per color assignment
+— the same mistake §7 already documented and fixed
+(`--dirichlet-epsilon 0.25 --temperature 1.0`) recurred here in a new
+one-off evaluation script; corrected before drawing any conclusion from
+it. With real diversity restored:
+
+| matchup | games | win rate (decided) | mean margin | undecided |
+|---|---|---|---|---|
+| gen8 vs. gen1 | 20 | 46.2% (6-7) | −1.27 | 7/20 (35%) |
+| gen8 vs. random-init | 16 | **73.3%** (11-4) | **+8.23** | 1/16 |
+
+A second confound needed controlling for even after fixing the
+determinism bug: 9x9's `DEFAULT_KOMI=7.5` decided most close games
+outright (white won both of the *first* pass's identical-per-color
+games) — score *margin* (komi-adjusted, not just win/loss) is reported
+alongside win rate for exactly this reason.
+
+**Reading the two matchups together:** the loop did produce a real,
+meaningfully-better-than-nothing player — gen8 clearly beats a
+random-init net (73.3%, +8.2 mean margin). But gen8 does **not** clearly
+beat gen1 (46.2%, statistically indistinguishable from a coin flip,
+slightly negative mean margin) — consistent with the loss-curve
+plateau/regression starting at generation 5. Most of this run's real
+gain happened in kifu-pretraining plus the first few self-play
+generations; the later generations, training on a shrinking,
+non-accumulating dataset, did not clearly add further strength and may
+have cost a little.
+
+**Qualitative read (one inspected game, gen8 vs. itself):** opening
+and midgame moves look like real Go, not degenerate play — varied
+board positions, `complexity`/`viable_count` telemetry moving
+sensibly move to move, not collapsing to "always pass" or a single
+repeated point. The specific, consistent weakness is endgame
+termination: this game (like 35% of the tournament's games) ran to the
+162-move cap rather than ending via two consecutive passes — near the
+end, `win_prob_black` saturates at exactly 0.000 for many moves in a
+row while both sides keep playing single, low-complexity moves instead
+of agreeing the game is over. "Semi-good" is a fair, literal
+description of where this lands: recognizably Go, clearly better than
+random, not yet able to reliably close a game out.
+
+**Honest bottom line and next lever.** This first attempt validates
+the *combination* (kifu-pretrain removes the random-generator ceiling
+§8d/§8e found; self-play refinement adds real signal on top) — the
+random-init comparison proves that. It does not yet demonstrate that
+*more* self-play generations compound further, and the concrete,
+diagnosed reason is `run_generations.sh`'s own documented
+simplification: no accumulating replay buffer, so each generation
+trains on less (and possibly narrower) data than the last once games
+start resolving quickly. The direct next lever isn't a new
+architecture question — it's fixing that: accumulate self-play data
+across generations instead of discarding each generation's data after
+one use, the change `run_generations.sh`'s own header comment already
+named as "a reasonable next step if this shows a real trend worth
+investing more in." It does.
+
 ---
 *Key files:* `engine/encoder.py` (prior art, CNN plane encoding),
 `engine/goboard.py` (board-size-agnostic rules, reused as-is),

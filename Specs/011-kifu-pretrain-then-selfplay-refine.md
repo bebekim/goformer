@@ -1,7 +1,7 @@
 # Get trans-go-former to play semi-good 9x9 Go: kifu-pretrain, then self-play refine
 
 Priority: high
-State: ready
+State: done
 
 ## Problem
 
@@ -133,17 +133,30 @@ Builds directly on `Specs/009` (kifu data + pipeline) and `Specs/003`
 
 ## Acceptance Criteria
 
-- [ ] `checkpoints/base_kifu9x9.pt` exists, trained per step 1.
-- [ ] `run_generations.sh` accepts `INIT_CKPT`, unchanged behavior
+- [x] `checkpoints/base_kifu9x9.pt` exists, trained per step 1. (Real
+      policy/value tradeoff found and documented, not silently
+      resolved — see `board-specification.md` §11.)
+- [x] `run_generations.sh` accepts `INIT_CKPT`, unchanged behavior
       when unset.
-- [ ] 8-generation refinement loop completes, seeded from the
+- [x] 8-generation refinement loop completes, seeded from the
       pretrained checkpoint.
-- [ ] Qualitative game review completed and recorded (sane vs.
-      degenerate play).
-- [ ] A concrete win-rate number exists (final generation vs. an
-      earlier baseline) — not just loss curves.
-- [ ] Result written up somewhere in `docs/`, evidence-first style.
-- [ ] `CHANGELOG.md` updated.
+- [x] Qualitative game review completed and recorded: sane, varied
+      opening/midgame play; a specific, real endgame-termination
+      weakness found (games often run to the move cap instead of
+      double-passing) and reported, not glossed over.
+- [x] A concrete win-rate number exists — two, in fact: gen8 vs.
+      random-init (73.3%, clear signal) and gen8 vs. gen1 (46.2%,
+      no clear improvement). A determinism bug in the first evaluation
+      attempt (identical games per color, §7's own already-documented
+      pitfall recurring) was caught and fixed before either number was
+      trusted.
+- [x] Result written up in `board-specification.md` §11, evidence-first
+      style, including the honest negative half of the result
+      (generations 5-8 plateaued/regressed) and a concrete, diagnosed
+      next lever (accumulate a self-play replay buffer across
+      generations — `run_generations.sh`'s own documented
+      simplification, not a new open question).
+- [x] `CHANGELOG.md` updated.
 
 ## Known Risks
 
