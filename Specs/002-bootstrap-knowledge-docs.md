@@ -217,3 +217,9 @@ None. This is the first spec for this repo.
   in sync automatically. Whoever next hits a stale doc should correct
   it in place rather than let inaccuracy compound (per
   `HARNESS_PRINCIPLES.md`'s "garbage collect continuously").
+
+## Decision Log
+
+| # | Proposed | Status | Why |
+|---|---|---|---|
+| 1 | Execute this spec directly (fast, free, no delegation exercised) vs. delegate it via `sail-subs` (slower, first real trial of the pipeline `001-adopt-sail-delegation.md` set up). | **Pending** | Deliberately low-risk (docs-only, easy to review) and self-contained enough to be a fair first `sail-subs` trial — but the repo owner hadn't decided between the two as of this spec's last edit. Whoever picks this up next should resolve it explicitly, not default silently to either path. |
