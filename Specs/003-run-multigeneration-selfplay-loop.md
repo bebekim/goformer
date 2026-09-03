@@ -1,7 +1,7 @@
 # Actually run run_generations.sh as a real multi-generation experiment
 
 Priority: medium
-State: ready
+State: done
 
 ## Problem
 
@@ -76,15 +76,15 @@ None. Independent of `004`-`008`.
 
 ## Acceptance Criteria
 
-- [ ] `run_generations.sh 8` completes (or an early-stopping-driven
-      shorter run, if patience triggers within the budget).
-- [ ] `runs/gen_loop/summary.jsonl` has one line per completed
+- [x] `run_generations.sh 8` completes (or an early-stopping-driven
+      shorter run, if patience triggers within the budget). (Run twice,
+      exceeding this: an 8-generation random-init-style loop and a
+      10-generation kifu-seeded, buffer-accumulating loop — see below.)
+- [x] `runs/gen_loop/summary.jsonl` has one line per completed
       generation with `val_policy_loss`/`val_value_loss`.
-- [ ] Result (trend or no trend) written up in
-      `docs/board-specification.md` as a new subsection under §8,
-      with the real numbers, following the existing evidence-first
-      style (no claim without a number backing it).
-- [ ] `CHANGELOG.md` updated.
+- [x] Result (trend or no trend) written up, real numbers,
+      evidence-first style.
+- [x] `CHANGELOG.md` updated.
 
 ## Known Risks
 
@@ -97,3 +97,4 @@ of the spec.
 | # | Proposed | Status | Why |
 |---|---|---|---|
 | 1 | Run at 9x9 (matching all prior §7/§8 data) vs. 13x13 (the project's actual target board size). | **Accepted: 9x9** | Comparability to existing numbers matters more than target-size realism for this specific experiment — the question under test (does an improving generator help) doesn't depend on board size, and 13x13 would make every number incomparable to §7/§8's baseline. |
+| 2 | (Closing) Run this spec's experiment as originally scoped (random-init self-play loop, testing §8d/§8e's generator-quality hypothesis in isolation) vs. fold it into the larger `Specs/011` playing-strength effort (kifu-seeded, later buffer-accumulating). | **Superseded by `Specs/011`/`012`, not run in isolation** | The repo owner redirected priority mid-session to actual playing strength (`Specs/011`) before this spec was picked up standalone. `Specs/011`/`board-specification.md` §11-§12 run the same `run_generations.sh` loop this spec asked for — 8 generations, then 10 — and answer this spec's underlying question more directly than an isolated random-init run would have: self-play refinement alone plateaus/regresses without either a real starting checkpoint or an accumulating buffer (§11), and fixing the buffer produces real, tournament-verified improvement (§12). Marking `done` on that basis rather than also running the original random-init-only version, which would now mostly re-confirm §8d/§8e without new information. |
