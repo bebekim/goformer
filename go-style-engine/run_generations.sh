@@ -9,13 +9,18 @@ set -euo pipefail
 # real, improving trend in val_policy_loss/val_value_loss; if it isn't,
 # the trend will be flat, same as §8d's "more data didn't help" result.
 #
-# Simplification, stated plainly: this does NOT accumulate a growing
-# replay buffer across generations the way real AlphaZero training does.
-# Each generation trains from scratch on only its own fresh self-play
-# data, warm-started from the previous generation's WEIGHTS (not its
-# data). This is the simplest version that still tests the core
-# hypothesis -- accumulating a buffer is a reasonable next step if this
-# shows a real trend worth investing more in.
+# Buffer accumulation (default ON, BUFFER=0 to disable): each
+# generation's fresh self-play shards are copied into a persistent
+# $OUT_DIR/buffer/ directory (generation-prefixed filenames, so nothing
+# from an earlier generation is overwritten), and every generation
+# trains on the WHOLE buffer so far -- not just its own fresh batch --
+# warm-started from the previous generation's weights, same as before.
+# This replaced an earlier version of this script that discarded each
+# generation's data after one use; Specs/011 found that version's gains
+# stalled/regressed after generation 4 as later generations trained on
+# a shrinking dataset (games resolving faster = fewer positions/game),
+# not a growing one. BUFFER=0 restores the original discard-each-
+# generation behavior, for comparison.
 #
 # Usage:
 #   ./run_generations.sh [NUM_GENERATIONS]
@@ -47,9 +52,14 @@ CKPT_DIR="${CKPT_DIR:-checkpoints/gen_loop}"
 SEED_BASE="${SEED_BASE:-0}"
 PYTHON="${PYTHON:-.venv/bin/python}"
 INIT_CKPT="${INIT_CKPT:-}"
+BUFFER="${BUFFER:-1}"
 
 mkdir -p "$OUT_DIR" "$CKPT_DIR"
 SUMMARY="$OUT_DIR/summary.jsonl"
+BUFFER_DIR="$OUT_DIR/buffer"
+if [ "$BUFFER" -eq 1 ]; then
+  mkdir -p "$BUFFER_DIR"
+fi
 
 echo "Starting $NUM_GENERATIONS-generation loop:"
 echo "  board_size=$BOARD_SIZE games=$GAMES rounds=$ROUNDS epochs=$EPOCHS patience=$PATIENCE"
@@ -83,12 +93,28 @@ for gen in $(seq 1 "$NUM_GENERATIONS"); do
     --seed "$SEED" $CKPT_FLAG \
     --out "$SP_OUT" --save-experience "$EXP_FILE"
 
+  TRAIN_SRC="$EXP_FILE"
+  if [ "$BUFFER" -eq 1 ]; then
+    # Copy this generation's per-game shards into the persistent
+    # buffer, renamed so every generation's files stay unique and so
+    # the name still starts with "game_" (train.py's directory loader
+    # requires that prefix -- see its _load_experience docstring).
+    for shard in "$SP_OUT"/experience/game_*.npz; do
+      [ -e "$shard" ] || continue
+      base="$(basename "$shard")"
+      cp "$shard" "$BUFFER_DIR/game_gen${gen}_${base#game_}"
+    done
+    TRAIN_SRC="$BUFFER_DIR"
+    n_shards=$(find "$BUFFER_DIR" -name '*.npz' | wc -l | tr -d ' ')
+    echo "Buffer now has $n_shards shards (through generation $gen)."
+  fi
+
   echo "=== Generation $gen/$NUM_GENERATIONS: train ==="
   INCKPT_FLAG=""
   if [ -n "$PREV_CKPT" ]; then
     INCKPT_FLAG="--in-checkpoint $PREV_CKPT"
   fi
-  "$PYTHON" train.py --experience "$EXP_FILE" --board-size "$BOARD_SIZE" \
+  "$PYTHON" train.py --experience "$TRAIN_SRC" --board-size "$BOARD_SIZE" \
     --net-type token --pos-mode "$POS_MODE" --gab-gen-size "$GAB_GEN_SIZE" \
     --gab-intermediate-dim "$GAB_GEN_SIZE" --dropout "$DROPOUT" \
     $INCKPT_FLAG --val-fraction 0.2 --epochs "$EPOCHS" \
