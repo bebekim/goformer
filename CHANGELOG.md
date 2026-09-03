@@ -4,6 +4,21 @@ Repository changes worth human review should be summarized here.
 
 ## Unreleased
 
+- Tested `Specs/011`'s own diagnosed next lever: `run_generations.sh`
+  now accumulates a growing self-play replay buffer across generations
+  (`BUFFER=1`, new default) instead of discarding each generation's
+  data after one use, plus `START_GEN` to resume an interrupted run.
+  Result (`docs/board-specification.md` §12): the fix worked as
+  diagnosed — no more plateau/regression (tight ~2.31-2.39 val_policy_loss
+  band through 10 generations, vs. the old run's collapse to 2.84-2.93),
+  and the fixed lineage clearly beats its own starting point (77.8% win
+  rate, +14.06 mean margin, gen10 vs. gen1, where the old run's gen8 vs.
+  gen1 was a coin flip). Honest caveat: this fixed run isn't clearly
+  stronger than the old run's final checkpoint in a direct head-to-head
+  (53.3%, near a coin flip) — loss curves and playing strength don't
+  perfectly track each other — and the endgame-termination weakness
+  found in `Specs/011` (games running to the move cap instead of
+  double-passing) persists unchanged.
 - Executed `Specs/011`, the first attempt to get `trans-go-former`
   actually playing (not just architecture-comparison checkpoints):
   kifu-pretrain (`pos_mode='both'`, §8g's corrected patience) then

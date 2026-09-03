@@ -1171,6 +1171,95 @@ one use, the change `run_generations.sh`'s own header comment already
 named as "a reasonable next step if this shows a real trend worth
 investing more in." It does.
 
+## 12. Does the replay buffer fix actually work?
+
+§11's diagnosed lever, tested directly: `run_generations.sh` gained
+`BUFFER=1` (new default) — every generation now trains on *all*
+self-play shards accumulated so far, not just its own (shrinking)
+fresh batch. Re-ran the same setup as §11 (kifu-pretrained base,
+`pos_mode='both'`, `PATIENCE=15`, 9x9), this time for 10 generations.
+The run was interrupted once (killed externally at generation 5, not
+a bug) and resumed cleanly from the saved checkpoint via a new
+`START_GEN` option — worth noting only because it means generations
+1-5 and 6-10 are genuinely two separate process runs continuing the
+same lineage, not one uninterrupted session, and the result held
+together across that seam.
+
+**Loss trend — no plateau/regression this time:**
+
+| generation | val_policy_loss | val_value_loss |
+|---|---|---|
+| 1 | 2.5559 | 0.00001 |
+| 2 | 2.4175 | 0.0214 |
+| 3 | 2.3869 | 0.0120 |
+| 4 | 2.3182 | 0.0468 |
+| 5 | 2.3377 | 0.0200 |
+| 6 | 2.3119 | 0.0415 |
+| 7 | 2.3406 | 0.0557 |
+| 8 | 2.3328 | 0.0501 |
+| 9 | 2.3878 | 0.0451 |
+| 10 | 2.3597 | 0.0375 |
+
+Beats §11's non-buffer run at every matching generation (e.g. gen4:
+2.318 vs. 2.459; gen8: 2.333 vs. 2.884) and, critically, does not
+reproduce §11's generation-5-onward collapse — it settles into a
+tight ~2.31-2.39 band from generation 4 on and stays there. Not
+still-improving by generation 10 either, though — a plateau, just a
+much higher and more stable one than §11's.
+
+**Tournament results (same methodology as §11: real diversity —
+`dirichlet_epsilon=0.25, temperature=1.0`, default `StyleKnobs()` is
+deterministic and was already caught producing byte-identical games
+once in §11 — and score margin reported alongside win rate since 9x9's
+`komi=7.5` decides close games between still-weak agents):
+
+| matchup | games | win rate (decided) | mean margin | undecided |
+|---|---|---|---|---|
+| buffer-gen10 vs. §11's non-buffer-gen8 | 20 | 53.3% (8-7) | +2.90 | 5/20 |
+| buffer-gen10 vs. buffer-gen1 (own lineage) | 20 | **77.8%** (7-2) | **+14.06** | 11/20 |
+| buffer-gen10 vs. random-init | 16 | 69.2% (9-4) | +9.65 | 3/16 |
+
+**Reading these together, honestly.** Within its own lineage, the
+buffer fix is unambiguous: generation 10 clearly beats generation 1
+(77.8%, +14.06 mean margin) — a real, decisive improvement §11's
+non-buffer run never showed (its gen8 vs. gen1 was 46.2%, a coin
+flip). That's the fix working as diagnosed.
+
+But buffer-gen10 vs. §11's non-buffer-gen8 is close (53.3%, +2.90) —
+barely above a coin flip, and buffer-gen10 vs. random-init (69.2%)
+isn't meaningfully higher than non-buffer-gen8 vs. random-init from
+§11 (73.3%). **The two loops land in roughly the same absolute
+strength ballpark**, even though the buffer version got there via a
+real, continued trajectory and the non-buffer version got there by
+luck-of-early-generations before stalling. Loss curves and head-to-head
+playing strength don't perfectly track each other here — worth stating
+plainly rather than papering over with the more flattering number
+(77.8% vs. gen1) alone.
+
+**Qualitative (one inspected buffer-gen10 game).** A real, worthwhile
+difference from §11's gen8 game: `win_prob_black` stays close to 0.5
+through most of this game rather than saturating to exactly 0.000 —
+more nuanced value calibration, less overconfident. But the same
+specific weakness §11 found persists: this game also ran to the
+162-move cap (17 passes scattered through it, more than §11's game's
+9, but still never two in a row) rather than resolving via double-pass.
+Buffer accumulation fixed the training-stability problem; it did not
+fix endgame termination, a separate, still-open weakness.
+
+**Bottom line.** The replay-buffer fix worked exactly as diagnosed —
+it eliminated the plateau/regression and produced a checkpoint that
+clearly beats where its own lineage started. It did not, on this one
+run, produce a checkpoint clearly stronger than the non-buffer run's
+lucky-early-stop result, and it did not fix the separate
+endgame-termination weakness. Two concrete next levers, not one
+speculative one: (1) more generations/more self-play games per
+generation now that the buffer removes the shrinking-data ceiling —
+this run stopped at 10 somewhat arbitrarily, not because the trend
+ran out; (2) endgame termination specifically looks like its own,
+narrower problem (the model doesn't learn "this game is decided, keep
+passing") worth a targeted look rather than assuming more of the same
+training will fix it incidentally.
+
 ---
 *Key files:* `engine/encoder.py` (prior art, CNN plane encoding),
 `engine/goboard.py` (board-size-agnostic rules, reused as-is),
