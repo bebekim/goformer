@@ -1,7 +1,7 @@
 # Adapt go-gibo-ingestion's kifu JSONL into training data, re-validate GAB on real human games
 
 Priority: high
-State: ready
+State: done
 
 ## Problem
 
@@ -186,32 +186,33 @@ file on disk at a known relative path). No other blockers.
 
 ## Acceptance Criteria
 
-- [ ] `kifu_to_experience.py` converts `go-gibo-ingestion`'s
+- [x] `kifu_to_experience.py` converts `go-gibo-ingestion`'s
       human-only (default) JSONL output into `game_*.npz` shards
-      consumable by `train.py` unmodified.
-- [ ] Coordinate mapping verified by hand against at least one real
-      game's original SGF, not just unit tests on synthetic data.
-- [ ] §8's `pos_mode` and `gab_gen_size` sweeps re-run on this dataset,
+      consumable by `train.py` unmodified. (80 games, 3,878 positions,
+      0 skipped on the real archive.)
+- [x] Coordinate mapping verified by hand against at least one real
+      game's original SGF, not just unit tests on synthetic data. (0
+      mismatches across all 80 moves of a spot-checked real game;
+      reward signs cross-checked against that game's recorded winner.)
+- [x] §8's `pos_mode` and `gab_gen_size` sweeps re-run on this dataset,
       with the same early-stopping/val-split discipline as §8c.
-- [ ] Result written into `docs/board-specification.md` as a new
-      subsection, explicitly comparing GAB's advantage (or lack of
-      one) on real human data vs. self-play data — real numbers,
-      following the existing evidence-first style, with the 80-game
-      sample-size caveat stated plainly.
-- [ ] `CHANGELOG.md` updated.
+- [x] Result written into `docs/board-specification.md` §8f —
+      real numbers, following the existing evidence-first style, with
+      the 80-game sample-size caveat stated plainly.
+- [x] `CHANGELOG.md` updated.
 
 ## Known Risks
 
-Medium-high (raised from the original draft's "medium" — see Decision
-Log #2). 80 games is a genuinely small dataset; a null or noisy result
-is a plausible, likely outcome, not necessarily a pipeline bug —
-cross-check against §8's own "one seed, no sweep" epistemic caution
-before drawing a strong conclusion, and consider this a first,
-directional read rather than a definitive answer. A secondary risk is
-a silent coordinate-mapping bug producing data that trains
-"successfully" but on corrupted targets — mitigated by the explicit
-hand-verification step in Acceptance Criteria, not just unit tests on
-synthetic fixtures.
+Realized, not just anticipated: the result is a genuine negative
+finding, not the noisy-but-directional read this spec's risk
+assessment expected. §8f found the value head fails to learn *at all*
+(train loss flat at the constant-predictor baseline, not just a val
+gap) on real human data, in every config tried — a flatter, more
+consistent non-result than "medium-high risk of noise" implied, which
+if anything argues the result is real rather than sampling artifact
+(see §8f's own discussion of why). The coordinate-mapping risk this
+section originally flagged did not materialize — verified clean by
+hand against real data, see Acceptance Criteria.
 
 ## Decision Log
 
