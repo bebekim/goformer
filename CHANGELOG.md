@@ -4,6 +4,33 @@ Repository changes worth human review should be summarized here.
 
 ## Unreleased
 
+- **GAB is now viable as trans-go-former's production architecture**
+  (`docs/board-specification.md` §13). `gab_absolute` was ruled out
+  earlier this session (§8g) after catastrophic policy-loss divergence
+  on real kifu data (3.7 -> 12+ within a few epochs). Root cause found
+  and fixed, not worked around: `train.py` had no gradient clipping
+  anywhere (`--grad-clip`, new flag, default 0.0/disabled); combined
+  with training on real self-play data (soft MCTS-visit targets)
+  instead of one-hot kifu targets -- GAB's original §7/§8 self-play
+  validation never showed this problem, only kifu training did -- GAB
+  now trains cleanly (best combined val loss 2.50, better than any
+  config on kifu data). Verified across a real 10-generation self-play
+  refinement loop (`run_generations.sh`, gained `--grad-clip`
+  passthrough and a `GAB_INTERMEDIATE_DIM` fix -- it had been
+  incorrectly tied to `GAB_GEN_SIZE`), including surviving generation
+  5, the exact point the earlier `'both'`-architecture lineage
+  regressed. Tournament-verified (script fixed to support mixed
+  architectures per side, was hardcoded to `'both'`): GAB's final
+  checkpoint beats random-init decisively (83.3% win rate, +12.08 mean
+  score margin -- the best margin any architecture reached this
+  session) and holds a real if modest edge over the `'both'` lineage
+  (66.7% win rate, +1.50 margin). Two things NOT resolved by this fix,
+  reported plainly: GAB's `best_epoch` is consistently very low (1-3
+  every generation, unlike `'both'`'s more varied pattern) -- unclear
+  yet if that's fast convergence or a shallow optimum; and endgame
+  termination (games running to the move cap instead of double-passing)
+  persists at a similar rate to every prior architecture, unaffected
+  by any of this fix.
 - Tested `Specs/011`'s own diagnosed next lever: `run_generations.sh`
   now accumulates a growing self-play replay buffer across generations
   (`BUFFER=1`, new default) instead of discarding each generation's
