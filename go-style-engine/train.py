@@ -150,6 +150,14 @@ def main(argv=None):
                          help='AdamW decoupled weight decay (see §8 -- same motivation '
                               'as --dropout). 0.0 makes AdamW behave identically to plain '
                               'Adam, so this is a strict extension of prior behavior.')
+    parser.add_argument('--grad-clip', type=float, default=0.0,
+                         help='max gradient norm (torch.nn.utils.clip_grad_norm_); '
+                              '0.0 (default) disables clipping, matching prior behavior. '
+                              'Added after §8g found gab_absolute\'s policy loss diverging '
+                              'catastrophically (3.7 -> 12+ within a few epochs) on real '
+                              'kifu data -- the textbook signature of unclipped exploding '
+                              'gradients, which nothing in this training loop guarded '
+                              'against before.')
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--val-fraction', type=float, default=0.0,
                          help='holdout fraction for a validation split reported '
@@ -258,6 +266,7 @@ def main(argv=None):
             'batch_size': args.batch_size,
             'lr': args.lr,
             'weight_decay': args.weight_decay,
+            'grad_clip': args.grad_clip,
             'device': args.device,
             'val_fraction': args.val_fraction,
             'seed': args.seed,
@@ -294,6 +303,8 @@ def main(argv=None):
 
             optimizer.zero_grad()
             loss.backward()
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
 
             total_policy_loss += policy_loss.item()
