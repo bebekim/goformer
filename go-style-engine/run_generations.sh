@@ -53,6 +53,7 @@ EPOCHS="${EPOCHS:-60}"
 PATIENCE="${PATIENCE:-5}"
 POS_MODE="${POS_MODE:-gab_absolute}"
 GAB_GEN_SIZE="${GAB_GEN_SIZE:-16}"
+GRAD_CLIP="${GRAD_CLIP:-0.0}"
 DROPOUT="${DROPOUT:-0.1}"
 OUT_DIR="${OUT_DIR:-runs/gen_loop}"
 CKPT_DIR="${CKPT_DIR:-checkpoints/gen_loop}"
@@ -125,6 +126,7 @@ for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
   "$PYTHON" train.py --experience "$TRAIN_SRC" --board-size "$BOARD_SIZE" \
     --net-type token --pos-mode "$POS_MODE" --gab-gen-size "$GAB_GEN_SIZE" \
     --gab-intermediate-dim "$GAB_GEN_SIZE" --dropout "$DROPOUT" \
+    --grad-clip "$GRAD_CLIP" \
     $INCKPT_FLAG --val-fraction 0.2 --epochs "$EPOCHS" \
     --early-stopping-patience "$PATIENCE" --seed "$SEED" \
     --out-checkpoint "$CKPT_FILE"
