@@ -34,9 +34,16 @@ set -euo pipefail
 # random weights -- e.g. a kifu-pretrained base (Specs/011), so
 # refinement starts from real signal instead of the random-generator
 # regime §8d/§8e showed plateaus. Must match POS_MODE/GAB_GEN_SIZE/
-# DROPOUT/BOARD_SIZE, same as any --in-checkpoint/--checkpoint use
-# elsewhere in this codebase -- mismatched architecture will fail to
-# load, not silently misbehave.
+# GAB_INTERMEDIATE_DIM/DROPOUT/BOARD_SIZE exactly, same as any
+# --in-checkpoint/--checkpoint use elsewhere in this codebase --
+# mismatched architecture will fail to load, not silently misbehave.
+# GAB_GEN_SIZE and GAB_INTERMEDIATE_DIM are two DIFFERENT parameters
+# (GeometricAttentionBias's `summarize` output width vs. `generate`'s)
+# that both default to 16 here but do not have to match each other --
+# a checkpoint trained by hand with only --gab-gen-size set (leaving
+# --gab-intermediate-dim at train.py's own 64 default) needs
+# GAB_INTERMEDIATE_DIM=64 here explicitly, not left to follow
+# GAB_GEN_SIZE.
 #
 # START_GEN (default: 1): resume an interrupted run at a specific
 # generation number instead of restarting from 1 -- combine with
@@ -53,6 +60,7 @@ EPOCHS="${EPOCHS:-60}"
 PATIENCE="${PATIENCE:-5}"
 POS_MODE="${POS_MODE:-gab_absolute}"
 GAB_GEN_SIZE="${GAB_GEN_SIZE:-16}"
+GAB_INTERMEDIATE_DIM="${GAB_INTERMEDIATE_DIM:-$GAB_GEN_SIZE}"
 GRAD_CLIP="${GRAD_CLIP:-0.0}"
 DROPOUT="${DROPOUT:-0.1}"
 OUT_DIR="${OUT_DIR:-runs/gen_loop}"
@@ -97,7 +105,7 @@ for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
   fi
   "$PYTHON" selfplay.py --board-size "$BOARD_SIZE" --games "$GAMES" \
     --rounds-per-move "$ROUNDS" --net-type token --pos-mode "$POS_MODE" \
-    --gab-gen-size "$GAB_GEN_SIZE" --gab-intermediate-dim "$GAB_GEN_SIZE" \
+    --gab-gen-size "$GAB_GEN_SIZE" --gab-intermediate-dim "$GAB_INTERMEDIATE_DIM" \
     --dropout "$DROPOUT" --dirichlet-epsilon 0.25 --temperature 1.0 \
     --seed "$SEED" $CKPT_FLAG \
     --out "$SP_OUT" --save-experience "$EXP_FILE"
@@ -125,7 +133,7 @@ for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
   fi
   "$PYTHON" train.py --experience "$TRAIN_SRC" --board-size "$BOARD_SIZE" \
     --net-type token --pos-mode "$POS_MODE" --gab-gen-size "$GAB_GEN_SIZE" \
-    --gab-intermediate-dim "$GAB_GEN_SIZE" --dropout "$DROPOUT" \
+    --gab-intermediate-dim "$GAB_INTERMEDIATE_DIM" --dropout "$DROPOUT" \
     --grad-clip "$GRAD_CLIP" \
     $INCKPT_FLAG --val-fraction 0.2 --epochs "$EPOCHS" \
     --early-stopping-patience "$PATIENCE" --seed "$SEED" \
