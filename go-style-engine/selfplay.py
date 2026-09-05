@@ -18,13 +18,26 @@ Experience is saved as one shard per game under <out>/experience/; if
 .npz at the end. Run directories are resumable: if games.jsonl already
 exists, already-completed indices are skipped.
 
-The per-game results are reproducible from (args.seed, game_idx, knobs,
-model) alone -- see module-level notes for the determinism assumptions
-and the one caveat (train.py's torch.randperm)."""
+Per-game MOVE SELECTION is deterministic given (args.seed, game_idx,
+knobs, model) when dirichlet_epsilon=temperature=0 (no exploration
+randomness) -- but this does NOT mean two separate process runs of the
+identical command reproduce byte-identical games. Checked directly
+while adding --workers: two plain sequential (--workers 1) runs of the
+same command, same seed, same checkpoint, zero exploration knobs,
+produced different games. Forcing single-threaded BLAS
+(OMP_NUM_THREADS=1) didn't fix it either. The remaining source is the
+model's own forward-pass floating-point output varying slightly
+between separate process launches -- a known PyTorch CPU limitation
+(non-deterministic reduction order in some ops without
+torch.use_deterministic_algorithms), not a bug in this file, and not
+something --workers introduces (it was already true before --workers
+existed). Games are still valid/legal either way; just don't rely on
+byte-for-byte reruns for anything."""
 import argparse
 import copy
 import dataclasses
 import json
+import multiprocessing
 import os
 import random
 import subprocess
@@ -154,6 +167,84 @@ def play_one_game(board_size, black_agent, white_agent, max_moves,
             white_collector.complete_episode(-black_reward)
 
     return telemetry, result
+
+
+def _play_and_package_game(model, encoder, black_knobs, white_knobs, args, game_idx):
+    """Play one game and package everything needed to write it to disk
+    (game record + combined-color experience arrays), without touching
+    any shared file handles -- the one piece of per-game work that's
+    identical whether it runs inline (--workers 1, the original
+    behavior) or inside a worker process (--workers > 1, new)."""
+    black_agent = ZeroAgent(model, encoder, black_knobs, device=args.device,
+                            seed=args.seed * 1000 + game_idx)
+    white_agent = ZeroAgent(model, encoder, white_knobs, device=args.device,
+                            seed=args.seed * 1000 + game_idx + 500)
+
+    black_collector = ZeroExperienceCollector()
+    white_collector = ZeroExperienceCollector()
+
+    max_moves = args.max_moves or (2 * args.board_size * args.board_size)
+    telemetry, result = play_one_game(
+        args.board_size, black_agent, white_agent, max_moves,
+        black_collector=black_collector, white_collector=white_collector)
+
+    game_record = {
+        'game_index': game_idx,
+        'board_size': args.board_size,
+        'black_preset': args.black_preset,
+        'white_preset': args.white_preset,
+        'moves': telemetry,
+        'result': result,
+    }
+    states, visit_counts, rewards = combine_experience(
+        [black_collector, white_collector]).to_arrays()
+    return game_idx, game_record, states, visit_counts, rewards
+
+
+# Populated once per worker PROCESS by _init_worker (multiprocessing's
+# 'spawn' start method re-imports this module fresh in each worker, so
+# a plain module-level dict is safe -- no cross-process sharing).
+_worker_ctx = {}
+
+
+def _init_worker(args, black_knobs, white_knobs):
+    # Each spawned worker is a fresh process/interpreter -- main()'s own
+    # top-level seeding doesn't propagate to it. Only matters when
+    # --checkpoint is omitted (random-init self-play, still used for the
+    # very first pre-kifu-seeded generation): without this, every worker
+    # would construct a DIFFERENTLY random-initialized model, breaking
+    # this module's own documented "reproducible from (seed, game_idx,
+    # knobs, model) alone" guarantee. With --checkpoint given (the usual
+    # case), this is a no-op -- the loaded weights are identical either way.
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    encoder, model = build_encoder_and_model(args)
+    if args.checkpoint:
+        model.load_state_dict(torch.load(args.checkpoint, map_location=args.device))
+    model.to(args.device)
+    model.eval()  # inference, not training -- dropout must not be live here.
+                  # Was missing everywhere in this file (train.py and
+                  # play_server.py both already call this); found via a
+                  # reproducibility check when adding --workers. Every
+                  # self-play run with --dropout > 0 (the standard setting,
+                  # 0.1, throughout this session's refinement loops) had
+                  # genuinely stochastic forward passes from live dropout,
+                  # an uncontrolled noise source on top of the intended
+                  # dirichlet/temperature exploration, and in violation of
+                  # this module's own documented reproducibility guarantee.
+    _worker_ctx['model'] = model
+    _worker_ctx['encoder'] = encoder
+    _worker_ctx['black_knobs'] = black_knobs
+    _worker_ctx['white_knobs'] = white_knobs
+    _worker_ctx['args'] = args
+
+
+def _play_game_worker(game_idx):
+    return _play_and_package_game(
+        _worker_ctx['model'], _worker_ctx['encoder'],
+        _worker_ctx['black_knobs'], _worker_ctx['white_knobs'],
+        _worker_ctx['args'], game_idx)
 
 
 def _write_manifest(out_dir, args, black_knobs, white_knobs, sha, torch_version, start_ts):
@@ -326,6 +417,15 @@ def main():
     parser.add_argument('--max-moves', type=int, default=None,
                          help='default: 2 * board_size^2')
     parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--workers', type=int, default=1,
+                         help='play this many games in parallel (separate '
+                              'processes, each with its own model copy). '
+                              '1 (default) = original sequential behavior, '
+                              'unchanged. Self-play games are independent '
+                              'and CPU-bound with no batching in engine/mcts.py '
+                              '(one board evaluated at a time), so this is '
+                              'the lever that actually uses multiple cores -- '
+                              'a bigger box only helps once this is set > 1.')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--out', type=str, required=True)
     parser.add_argument('--save-experience', type=str, default=None,
@@ -353,9 +453,17 @@ def main():
     if args.checkpoint:
         model.load_state_dict(torch.load(args.checkpoint, map_location=args.device))
     model.to(args.device)
+    model.eval()  # inference, not training -- dropout must not be live here.
+                  # Was missing everywhere in this file (train.py and
+                  # play_server.py both already call this); found via a
+                  # reproducibility check when adding --workers. Every
+                  # self-play run with --dropout > 0 (the standard setting,
+                  # 0.1, throughout this session's refinement loops) had
+                  # genuinely stochastic forward passes from live dropout,
+                  # an uncontrolled noise source on top of the intended
+                  # dirichlet/temperature exploration, and in violation of
+                  # this module's own documented reproducibility guarantee.
     print(f'Model parameters: {sum(p.numel() for p in model.parameters()):,}')
-
-    max_moves = args.max_moves or (2 * args.board_size * args.board_size)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -392,60 +500,41 @@ def main():
     decided = 0
     t0 = start_ts
 
-    for game_idx in range(args.games):
-        if game_idx in completed:
-            # Skip already-completed games on resume
-            continue
-
-        black_agent = ZeroAgent(model, encoder, black_knobs, device=args.device,
-                                seed=args.seed * 1000 + game_idx)
-        white_agent = ZeroAgent(model, encoder, white_knobs, device=args.device,
-                                seed=args.seed * 1000 + game_idx + 500)
-
-        black_collector = white_collector = None
-        if args.save_experience or True:
-            # Always create collectors so we can write per-game shards;
-            # the --save-experience flag now controls whether the FINAL
-            # combined .npz is written (in addition to shards).
-            black_collector = ZeroExperienceCollector()
-            white_collector = ZeroExperienceCollector()
-
-        telemetry, result = play_one_game(
-            args.board_size, black_agent, white_agent, max_moves,
-            black_collector=black_collector, white_collector=white_collector)
-
-        # Write per-game JSON line to games.jsonl
-        game_record = {
-            'game_index': game_idx,
-            'board_size': args.board_size,
-            'black_preset': args.black_preset,
-            'white_preset': args.white_preset,
-            'moves': telemetry,
-            'result': result,
-        }
+    def _record_completed_game(game_idx, game_record, states, visit_counts, rewards):
+        nonlocal black_wins, decided
         games_file.write(json.dumps(game_record) + '\n')
         games_file.flush()
+        np.savez_compressed(exp_dir / f'game_{game_idx:04d}.npz',
+                            states=states, visit_counts=visit_counts, rewards=rewards)
 
-        # Save experience shard for this game (always, since collectors exist).
-        # Both colors' collectors, combined -- saving only black_collector was
-        # a real bug (found while adding self-play parallelism): white's
-        # positions were recorded into white_collector by play_one_game but
-        # never written to disk, silently discarding half of every game's
-        # training signal in every self-play run to date.
-        if black_collector is not None:
-            combine_experience([black_collector, white_collector]).save(
-                exp_dir / f'game_{game_idx:04d}.npz')
-
+        result = game_record['result']
         if result['winner'] is not None:
             decided += 1
             if result['winner'] == 'black':
                 black_wins += 1
 
+        telemetry = game_record['moves']
         avg_complexity = np.mean([m['complexity'] for m in telemetry]) if telemetry else 0.0
         avg_think = np.mean([m['think_time_s'] for m in telemetry]) if telemetry else 0.0
         print(f'game {game_idx + 1}/{args.games}: {len(telemetry)} moves, '
               f'result={result.get("winner")}, avg_complexity={avg_complexity:.3f}, '
               f'avg_think_s={avg_think:.3f}')
+
+    remaining = [i for i in range(args.games) if i not in completed]
+
+    if args.workers > 1 and remaining:
+        print(f'running {len(remaining)} games across {args.workers} worker processes')
+        ctx = multiprocessing.get_context('spawn')
+        with ctx.Pool(args.workers, initializer=_init_worker,
+                      initargs=(args, black_knobs, white_knobs)) as pool:
+            for game_idx, game_record, states, visit_counts, rewards in \
+                    pool.imap_unordered(_play_game_worker, remaining):
+                _record_completed_game(game_idx, game_record, states, visit_counts, rewards)
+    else:
+        for game_idx in remaining:
+            _, game_record, states, visit_counts, rewards = _play_and_package_game(
+                model, encoder, black_knobs, white_knobs, args, game_idx)
+            _record_completed_game(game_idx, game_record, states, visit_counts, rewards)
 
     games_file.close()
 

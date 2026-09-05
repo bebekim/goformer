@@ -29,6 +29,13 @@ set -euo pipefail
 # (docs/board-specification.md §8e) and can be overridden via env vars,
 # e.g.: BOARD_SIZE=13 GAMES=60 ./run_generations.sh 8
 #
+# WORKERS (default: 1, sequential, unchanged behavior): play this many
+# self-play games in parallel per generation (selfplay.py --workers).
+# engine/mcts.py evaluates one board at a time with no batching, so a
+# bigger/multi-core box only actually helps once this is set > 1 --
+# GPU doesn't help this bottleneck either, since it's many tiny
+# sequential calls, not one big batch.
+#
 # INIT_CKPT (default: unset, i.e. random init, the original behavior):
 # seed generation 1's self-play from an existing checkpoint instead of
 # random weights -- e.g. a kifu-pretrained base (Specs/011), so
@@ -55,6 +62,7 @@ set -euo pipefail
 NUM_GENERATIONS="${1:-5}"
 BOARD_SIZE="${BOARD_SIZE:-9}"
 GAMES="${GAMES:-30}"
+WORKERS="${WORKERS:-1}"
 ROUNDS="${ROUNDS:-50}"
 EPOCHS="${EPOCHS:-60}"
 PATIENCE="${PATIENCE:-5}"
@@ -106,7 +114,7 @@ for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
   "$PYTHON" selfplay.py --board-size "$BOARD_SIZE" --games "$GAMES" \
     --rounds-per-move "$ROUNDS" --net-type token --pos-mode "$POS_MODE" \
     --gab-gen-size "$GAB_GEN_SIZE" --gab-intermediate-dim "$GAB_INTERMEDIATE_DIM" \
-    --dropout "$DROPOUT" --dirichlet-epsilon 0.25 --temperature 1.0 \
+    --dropout "$DROPOUT" --dirichlet-epsilon 0.25 --temperature 1.0 --workers "$WORKERS" \
     --seed "$SEED" $CKPT_FLAG \
     --out "$SP_OUT" --save-experience "$EXP_FILE"
 
