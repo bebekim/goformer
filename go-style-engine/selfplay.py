@@ -426,9 +426,15 @@ def main():
         games_file.write(json.dumps(game_record) + '\n')
         games_file.flush()
 
-        # Save experience shard for this game (always, since collectors exist)
+        # Save experience shard for this game (always, since collectors exist).
+        # Both colors' collectors, combined -- saving only black_collector was
+        # a real bug (found while adding self-play parallelism): white's
+        # positions were recorded into white_collector by play_one_game but
+        # never written to disk, silently discarding half of every game's
+        # training signal in every self-play run to date.
         if black_collector is not None:
-            black_collector.save(exp_dir / f'game_{game_idx:04d}.npz')
+            combine_experience([black_collector, white_collector]).save(
+                exp_dir / f'game_{game_idx:04d}.npz')
 
         if result['winner'] is not None:
             decided += 1
