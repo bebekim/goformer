@@ -58,6 +58,20 @@ set -euo pipefail
 # the SAME OUT_DIR/CKPT_DIR (so the existing buffer/ is reused, not
 # recreated) to continue exactly where a stopped run left off, without
 # clobbering or discarding the generations already done.
+#
+# BUFFER_WINDOW (default: 0, unbounded -- unchanged behavior): the
+# buffer's own real cost. Accumulating every generation's games
+# forever means training set size grows without limit, so per-
+# generation TRAINING time grows without limit too -- a real run
+# (Specs/011's follow-up, a Sail box) took 36+ minutes to train
+# generation 10 alone once the buffer reached 600 games, versus
+# seconds at generation 2's ~120 games, with no sign of leveling off.
+# BUFFER_WINDOW=K keeps only the most recent K generations' shards in
+# the buffer (older ones deleted after each generation, real
+# AlphaZero-style replay-buffer eviction, not just a read-side
+# filter) -- bounding per-generation training cost roughly flat
+# indefinitely, at the cost of the model no longer training on
+# arbitrarily old self-play data. Requires BUFFER=1 (the default).
 
 NUM_GENERATIONS="${1:-5}"
 BOARD_SIZE="${BOARD_SIZE:-9}"
@@ -77,6 +91,7 @@ SEED_BASE="${SEED_BASE:-0}"
 PYTHON="${PYTHON:-.venv/bin/python}"
 INIT_CKPT="${INIT_CKPT:-}"
 BUFFER="${BUFFER:-1}"
+BUFFER_WINDOW="${BUFFER_WINDOW:-0}"
 START_GEN="${START_GEN:-1}"
 
 mkdir -p "$OUT_DIR" "$CKPT_DIR"
@@ -129,6 +144,32 @@ for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
       base="$(basename "$shard")"
       cp "$shard" "$BUFFER_DIR/game_gen${gen}_${base#game_}"
     done
+
+    if [ "$BUFFER_WINDOW" -gt 0 ]; then
+      # Evict shards from generations older than the window -- real
+      # eviction (files removed), not just excluded from this
+      # generation's read. Shard names are "game_gen<N>_<rest>.npz";
+      # extract N and compare against the oldest generation still
+      # allowed in the window.
+      min_gen=$((gen - BUFFER_WINDOW + 1))
+      if [ "$min_gen" -gt 0 ]; then
+        pruned=0
+        for f in "$BUFFER_DIR"/game_gen*_*.npz; do
+          [ -e "$f" ] || continue
+          fbase="$(basename "$f")"
+          shard_gen="${fbase#game_gen}"
+          shard_gen="${shard_gen%%_*}"
+          if [ "$shard_gen" -lt "$min_gen" ] 2>/dev/null; then
+            rm -f "$f"
+            pruned=$((pruned + 1))
+          fi
+        done
+        if [ "$pruned" -gt 0 ]; then
+          echo "Pruned $pruned shard(s) from generations before $min_gen (BUFFER_WINDOW=$BUFFER_WINDOW)."
+        fi
+      fi
+    fi
+
     TRAIN_SRC="$BUFFER_DIR"
     n_shards=$(find "$BUFFER_DIR" -name '*.npz' | wc -l | tr -d ' ')
     echo "Buffer now has $n_shards shards (through generation $gen)."
