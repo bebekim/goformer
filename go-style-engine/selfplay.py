@@ -240,6 +240,16 @@ def _init_worker(args, black_knobs, white_knobs):
     # this module's own documented "reproducible from (seed, game_idx,
     # knobs, model) alone" guarantee. With --checkpoint given (the usual
     # case), this is a no-op -- the loaded weights are identical either way.
+    # PyTorch defaults each process's intra-op thread pool to one thread
+    # per (perceived) core -- fine for a single process, but with a Pool
+    # of N worker processes each independently spinning up that many
+    # threads, N processes end up oversubscribing the machine N-fold
+    # (measured: 8 workers x 15 threads = 120 threads contending for 8
+    # physical cores, load average ~40 on an 8-core box). Each worker
+    # here only ever runs one game at a time, so it needs exactly one
+    # thread for its own inference -- the parallelism already comes from
+    # the process pool, not from each process's internal thread pool.
+    torch.set_num_threads(1)
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
