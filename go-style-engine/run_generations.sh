@@ -72,6 +72,16 @@ set -euo pipefail
 # filter) -- bounding per-generation training cost roughly flat
 # indefinitely, at the cost of the model no longer training on
 # arbitrarily old self-play data. Requires BUFFER=1 (the default).
+#
+# TEMP_CUTOFF (default: unset, disabled -- unchanged behavior): passed
+# straight through as selfplay.py --temperature-cutoff. Added after
+# real qualitative play-testing rated the resulting checkpoints
+# "18k-level" -- every self-play game used temperature=1.0/dirichlet
+# noise for its ENTIRE length (this script's own self-play call always
+# passed --dirichlet-epsilon 0.25 --temperature 1.0 unconditionally),
+# meaning the training data stayed noisy in the midgame/endgame too,
+# not just the opening, unlike standard AlphaZero-style annealing.
+# TEMP_CUTOFF=N switches both self-play sides to greedy after N plies.
 
 NUM_GENERATIONS="${1:-5}"
 BOARD_SIZE="${BOARD_SIZE:-9}"
@@ -92,6 +102,7 @@ PYTHON="${PYTHON:-.venv/bin/python}"
 INIT_CKPT="${INIT_CKPT:-}"
 BUFFER="${BUFFER:-1}"
 BUFFER_WINDOW="${BUFFER_WINDOW:-0}"
+TEMP_CUTOFF="${TEMP_CUTOFF:-}"
 START_GEN="${START_GEN:-1}"
 
 mkdir -p "$OUT_DIR" "$CKPT_DIR"
@@ -126,11 +137,15 @@ for gen in $(seq "$START_GEN" "$NUM_GENERATIONS"); do
   if [ -n "$PREV_CKPT" ]; then
     CKPT_FLAG="--checkpoint $PREV_CKPT"
   fi
+  TEMP_CUTOFF_FLAG=""
+  if [ -n "$TEMP_CUTOFF" ]; then
+    TEMP_CUTOFF_FLAG="--temperature-cutoff $TEMP_CUTOFF"
+  fi
   "$PYTHON" selfplay.py --board-size "$BOARD_SIZE" --games "$GAMES" \
     --rounds-per-move "$ROUNDS" --net-type token --pos-mode "$POS_MODE" \
     --gab-gen-size "$GAB_GEN_SIZE" --gab-intermediate-dim "$GAB_INTERMEDIATE_DIM" \
     --dropout "$DROPOUT" --dirichlet-epsilon 0.25 --temperature 1.0 --workers "$WORKERS" \
-    --seed "$SEED" $CKPT_FLAG \
+    --seed "$SEED" $CKPT_FLAG $TEMP_CUTOFF_FLAG \
     --out "$SP_OUT" --save-experience "$EXP_FILE"
 
   TRAIN_SRC="$EXP_FILE"

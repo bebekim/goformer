@@ -112,11 +112,28 @@ def _git_sha():
 
 
 def play_one_game(board_size, black_agent, white_agent, max_moves,
-                   black_collector=None, white_collector=None):
+                   black_collector=None, white_collector=None,
+                   temperature_cutoff=None):
+    """temperature_cutoff: standard AlphaZero-style annealing -- after
+    this many plies, both agents switch to temperature=0/
+    dirichlet_epsilon=0 (greedy, no exploration noise) for the rest of
+    the game. None (default) means never anneal -- temperature/
+    dirichlet stay whatever the agents' own knobs say, for the whole
+    game, the original behavior. Without this, EVERY move of EVERY
+    self-play game (not just the opening) samples among near-tied
+    options at temperature=1.0 -- the setting needed for opening
+    diversity, but which also makes the training data noisy for the
+    entire game, including the midgame/endgame where the network may
+    already have a clear, correct best move. Reassigns each agent's
+    OWN .knobs (dataclasses.replace, not mutation) rather than the
+    shared StyleKnobs instance callers construct once and reuse across
+    every game in a run -- mutating that in place would leak the
+    annealed settings into every subsequent game too."""
     game = GameState.new_game(board_size)
     agents = {Player.black: black_agent, Player.white: white_agent}
     telemetry = []
     move_index = 0
+    cutoff_applied = False
 
     if black_collector is not None:
         black_agent.set_collector(black_collector)
@@ -126,6 +143,12 @@ def play_one_game(board_size, black_agent, white_agent, max_moves,
         white_collector.begin_episode()
 
     while not game.is_over() and move_index < max_moves:
+        if (temperature_cutoff is not None and not cutoff_applied
+                and move_index >= temperature_cutoff):
+            for a in (black_agent, white_agent):
+                a.knobs = dataclasses.replace(a.knobs, temperature=0.0, dirichlet_epsilon=0.0)
+            cutoff_applied = True
+
         mover = game.next_player
         agent = agents[mover]
         move, diag = agent.select_move(game)
@@ -186,7 +209,8 @@ def _play_and_package_game(model, encoder, black_knobs, white_knobs, args, game_
     max_moves = args.max_moves or (2 * args.board_size * args.board_size)
     telemetry, result = play_one_game(
         args.board_size, black_agent, white_agent, max_moves,
-        black_collector=black_collector, white_collector=white_collector)
+        black_collector=black_collector, white_collector=white_collector,
+        temperature_cutoff=args.temperature_cutoff)
 
     game_record = {
         'game_index': game_idx,
@@ -260,6 +284,7 @@ def _write_manifest(out_dir, args, black_knobs, white_knobs, sha, torch_version,
             'safety_lambda': args.safety_lambda,
             'temperature': args.temperature,
             'dirichlet_epsilon': args.dirichlet_epsilon,
+            'temperature_cutoff': args.temperature_cutoff,
             'checkpoint': args.checkpoint,
             'net_type': args.net_type,
             'channels': args.channels,
@@ -378,6 +403,16 @@ def main():
     parser.add_argument('--safety-lambda', type=float, default=None)
     parser.add_argument('--temperature', type=float, default=None)
     parser.add_argument('--dirichlet-epsilon', type=float, default=None)
+    parser.add_argument('--temperature-cutoff', type=int, default=None,
+                         help='standard AlphaZero-style annealing: switch to greedy '
+                              '(temperature=0, dirichlet_epsilon=0) after this many '
+                              'plies, for the rest of the game. Default: disabled -- '
+                              'temperature/dirichlet stay constant the whole game '
+                              '(the original behavior). Without this, every self-play '
+                              'game is noisy for its full length, not just the opening, '
+                              'even in the midgame/endgame where the network may '
+                              'already have a clear best move -- a real, plausible '
+                              'contributor to weak resulting play, not just data volume.')
     parser.add_argument('--checkpoint', type=str, default=None,
                          help='PyTorch state_dict to load for both agents; random init if omitted')
     parser.add_argument('--net-type', choices=('cnn', 'token'), default='cnn',
